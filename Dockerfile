@@ -7,7 +7,7 @@
 #   - Instance Principal: -e OCI_USE_INSTANCE_PRINCIPAL=true
 
 # Multi-stage build for smaller final image
-FROM python:3.12-slim as builder
+FROM python:3.14-slim as builder
 
 WORKDIR /build
 
@@ -21,7 +21,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Final stage
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
