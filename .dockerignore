@@ -1,0 +1,79 @@
+# Security - NEVER include credentials in Docker image
+.oci/
+*.pem
+*.key
+.env
+.env.*
+config
+credentials
+secrets/
+*.secret
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation (not needed in runtime image)
+*.md
+docs/
+examples/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# Backups
+backups/
+*.bak
+*.backup
+
+# Test files
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# CI/CD
+.github/
+.circleci/
+.travis.yml
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Scripts not needed in container
+setup.sh
+setup.bat
+scripts/setup.sh
+scripts/setup.bat
+scripts/convert_key.sh

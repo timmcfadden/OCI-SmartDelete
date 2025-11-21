@@ -1,0 +1,4 @@
+# Requirements for OCI Smart Delete
+oci>=2.149.0
+flask>=3.0.0
+cryptography>=41.0.0

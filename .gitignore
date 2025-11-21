@@ -1,0 +1,41 @@
+*.pyc
+__pycache__/
+lib64
+lib/
+bin/
+include/
+pyvenv.cfg
+.venv/
+.vscode/
+.zed/
+
+# ============================================================================
+# SECURITY: NEVER commit credentials or secrets
+# ============================================================================
+.oci/
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+config
+credentials
+secrets/
+*.secret
+
+# Docker override files (may contain secrets)
+docker-compose.override.yml
+
+# Backup files
+backups/
+*.bak
+*.backup
+
+# Logs (may contain sensitive data)
+*.log
+logs/
+
+# Claude Code files
+.claude/
+.claude_cache/
+*claude*.json

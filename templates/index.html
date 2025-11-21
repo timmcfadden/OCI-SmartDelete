@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCI Smart Delete</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <style>
+        [x-cloak] { display: none !important; }
+        .resource-deleted {
+            text-decoration: line-through;
+            opacity: 0.6;
+        }
+        .resource-deleting {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        .resource-failed {
+            background-color: #fee2e2;
+        }
+        .spinner-circle {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* Loading spinner for compartment dropdown */
+        .spinner {
+            margin: 20px auto;
+            width: 50px;
+            height: 40px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 2px;
+        }
+
+        .spinner > div {
+            background-color: #3b82f6;
+            height: 100%;
+            width: 6px;
+            -webkit-animation: sk-stretchdelay 1.2s infinite ease-in-out;
+            animation: sk-stretchdelay 1.2s infinite ease-in-out;
+        }
+
+        .spinner .rect2 {
+            -webkit-animation-delay: -1.1s;
+            animation-delay: -1.1s;
+        }
+
+        .spinner .rect3 {
+            -webkit-animation-delay: -1.0s;
+            animation-delay: -1.0s;
+        }
+
+        .spinner .rect4 {
+            -webkit-animation-delay: -0.9s;
+            animation-delay: -0.9s;
+        }
+
+        .spinner .rect5 {
+            -webkit-animation-delay: -0.8s;
+            animation-delay: -0.8s;
+        }
+
+        @-webkit-keyframes sk-stretchdelay {
+            0%, 40%, 100% { -webkit-transform: scaleY(0.4) }
+            20% { -webkit-transform: scaleY(1.0) }
+        }
+
+        @keyframes sk-stretchdelay {
+            0%, 40%, 100% {
+                transform: scaleY(0.4);
+                -webkit-transform: scaleY(0.4);
+            }
+            20% {
+                transform: scaleY(1.0);
+                -webkit-transform: scaleY(1.0);
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen" x-data="ociApp()" x-init="init()">
+    <!-- Header -->
+    <div class="bg-gradient-to-r from-blue-600 to-blue-800 text-white shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 py-6">
+            <h1 class="text-3xl font-bold">OCI Smart Delete</h1>
+            <p class="text-blue-100 mt-1">Fast compartment cleanup with real-time progress</p>
+            <p class="text-sm text-blue-200 mt-2" x-show="tenancyName">
+                Tenancy: <span class="font-semibold" x-text="tenancyName"></span>
+            </p>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Step 1: Select Compartment -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex items-center mb-4">
+                <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold mr-3">1</div>
+                <h2 class="text-xl font-semibold">Select Compartment</h2>
+            </div>
+
+            <!-- Loading Spinner -->
+            <div x-show="loadingCompartments" x-cloak class="text-center py-4">
+                <div class="spinner">
+                    <div class="rect1"></div>
+                    <div class="rect2"></div>
+                    <div class="rect3"></div>
+                    <div class="rect4"></div>
+                    <div class="rect5"></div>
+                </div>
+                <p class="text-gray-600 mt-2">Loading compartments...</p>
+            </div>
+
+            <!-- Compartment Selection (shown when not loading) -->
+            <div x-show="!loadingCompartments" class="flex gap-3">
+                <select
+                    x-model="selectedCompartment"
+                    class="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    :disabled="isDeleting">
+                    <option value="">Choose a compartment...</option>
+                    <template x-for="comp in compartments" :key="comp.id">
+                        <option :value="comp.id" x-text="comp.name"></option>
+                    </template>
+                </select>
+                <button
+                    @click="loadCompartments()"
+                    class="px-6 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50"
+                    :disabled="isDeleting">
+                    🔄 Refresh
+                </button>
+            </div>
+        </div>
+
+        <!-- Step 2: Discover Resources -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div class="flex items-center mb-4">
+                <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold mr-3">2</div>
+                <h2 class="text-xl font-semibold">Discover Resources</h2>
+            </div>
+            <button
+                @click="discoverResources()"
+                class="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 flex items-center"
+                :disabled="!selectedCompartment || discovering || isDeleting">
+                <span x-show="!discovering">🔍 Discover Resources</span>
+                <span x-show="discovering" class="flex items-center">
+                    <div class="spinner-circle mr-2"></div> Discovering...
+                </span>
+            </button>
+
+            <!-- Discovery Results -->
+            <div x-show="resources.length > 0" x-cloak class="mt-6">
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                    <div class="bg-blue-50 rounded-lg p-4 text-center">
+                        <div class="text-3xl font-bold text-blue-600" x-text="totalResources"></div>
+                        <div class="text-sm text-gray-600 mt-1">Total Resources</div>
+                    </div>
+                    <div class="bg-green-50 rounded-lg p-4 text-center">
+                        <div class="text-3xl font-bold text-green-600" x-text="resources.length"></div>
+                        <div class="text-sm text-gray-600 mt-1">Resource Types</div>
+                    </div>
+                    <div class="bg-purple-50 rounded-lg p-4 text-center">
+                        <div class="text-3xl font-bold text-purple-600" x-text="discoveryTime"></div>
+                        <div class="text-sm text-gray-600 mt-1">Discovery Time</div>
+                    </div>
+                </div>
+
+                <!-- Resource List with Real-time Status -->
+                <div class="space-y-3">
+                    <template x-for="resource in resources" :key="resource.type">
+                        <div class="border border-gray-200 rounded-lg overflow-hidden">
+                            <div class="bg-gray-50 p-4 flex items-center justify-between cursor-pointer hover:bg-gray-100"
+                                 @click="toggleResourceDetails(resource.type)">
+                                <div class="flex items-center gap-3">
+                                    <span class="text-2xl">📦</span>
+                                    <div>
+                                        <span class="font-semibold" x-text="resource.type"></span>
+                                        <span class="text-gray-600 ml-2">(<span x-text="resource.count"></span> resources)</span>
+                                    </div>
+                                </div>
+                                <button class="text-blue-600 hover:text-blue-800">
+                                    <span x-show="!expandedTypes.includes(resource.type)">Show Details ▼</span>
+                                    <span x-show="expandedTypes.includes(resource.type)">Hide Details ▲</span>
+                                </button>
+                            </div>
+                            <!-- Resource Details -->
+                            <div x-show="expandedTypes.includes(resource.type)" x-cloak class="p-4 bg-white">
+                                <table class="w-full text-sm">
+                                    <thead>
+                                        <tr class="border-b">
+                                            <th class="text-left py-2">Name</th>
+                                            <th class="text-left py-2">State</th>
+                                            <th class="text-left py-2">Region</th>
+                                            <th class="text-center py-2">Status</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <template x-for="item in resource.items" :key="item.id">
+                                            <tr class="border-b"
+                                                :class="{
+                                                    'resource-deleted': getResourceStatus(item.id) === 'deleted',
+                                                    'resource-deleting': getResourceStatus(item.id) === 'deleting',
+                                                    'resource-failed': getResourceStatus(item.id) === 'failed'
+                                                }">
+                                                <td class="py-2" x-text="item.name"></td>
+                                                <td class="py-2">
+                                                    <span class="px-2 py-1 text-xs rounded-full bg-gray-100" x-text="item.state"></span>
+                                                </td>
+                                                <td class="py-2" x-text="item.region"></td>
+                                                <td class="py-2 text-center">
+                                                    <span x-show="getResourceStatus(item.id) === 'pending'" class="text-gray-400">⏳ Pending</span>
+                                                    <span x-show="getResourceStatus(item.id) === 'deleting'" class="text-blue-600">
+                                                        <div class="spinner-circle inline-block mr-1"></div> Deleting...
+                                                    </span>
+                                                    <span x-show="getResourceStatus(item.id) === 'deleted'" class="text-green-600">✓ Deleted</span>
+                                                    <span x-show="getResourceStatus(item.id) === 'failed'" class="text-red-600"
+                                                          :title="getResourceError(item.id)">✗ Failed</span>
+                                                </td>
+                                            </tr>
+                                        </template>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 3: Delete Resources -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6" x-show="resources.length > 0" x-cloak>
+            <div class="flex items-center mb-4">
+                <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold mr-3">3</div>
+                <h2 class="text-xl font-semibold">Delete Resources</h2>
+            </div>
+
+            <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
+                <div class="flex">
+                    <div class="flex-shrink-0">⚠️</div>
+                    <div class="ml-3">
+                        <p class="text-sm text-yellow-700">
+                            <strong>Warning:</strong> This action will permanently delete resources. This cannot be undone.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mb-4">
+                <label class="flex items-center cursor-pointer">
+                    <input type="checkbox" x-model="deleteCompartmentToo" class="mr-2 w-4 h-4" :disabled="isDeleting">
+                    <span class="text-gray-700">Also delete the compartment after resources are removed</span>
+                </label>
+            </div>
+
+            <!-- Deletion Progress -->
+            <div x-show="isDeleting" x-cloak class="mb-6">
+                <div class="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div class="flex items-center mb-2">
+                        <div class="spinner-circle mr-3"></div>
+                        <span class="font-semibold text-blue-900" x-text="deletionPhase"></span>
+                    </div>
+                    <div class="text-sm text-blue-700 mb-2" x-text="deletionStatus"></div>
+
+                    <!-- Progress Bar -->
+                    <div class="w-full bg-gray-200 rounded-full h-4 mb-2">
+                        <div class="bg-blue-600 h-4 rounded-full transition-all duration-300"
+                             :style="`width: ${deletionProgress}%`"></div>
+                    </div>
+                    <div class="text-xs text-gray-600 flex justify-between">
+                        <span><span x-text="deletedCount"></span> deleted</span>
+                        <span><span x-text="failedCount"></span> failed</span>
+                        <span><span x-text="deletionProgress"></span>% complete</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Delete Buttons -->
+            <div class="flex gap-3">
+                <button
+                    @click="deleteResources()"
+                    class="flex-1 px-6 py-3 rounded-lg text-white font-semibold disabled:opacity-50 flex items-center justify-center"
+                    :class="deleteCompartmentToo ? 'bg-red-600 hover:bg-red-700' : 'bg-orange-600 hover:bg-orange-700'"
+                    :disabled="isDeleting || resources.length === 0">
+                    <span x-show="!isDeleting">
+                        <span x-show="!deleteCompartmentToo">🗑️ Delete Resources Only</span>
+                        <span x-show="deleteCompartmentToo">🗑️ Delete Resources + Compartment</span>
+                    </span>
+                    <span x-show="isDeleting" class="flex items-center">
+                        <div class="spinner-circle mr-2"></div> Deletion in Progress...
+                    </span>
+                </button>
+            </div>
+
+            <!-- Completion Message -->
+            <div x-show="deletionComplete" x-cloak class="mt-6">
+                <div class="bg-green-50 border-l-4 border-green-400 p-4">
+                    <div class="flex">
+                        <div class="flex-shrink-0">✓</div>
+                        <div class="ml-3">
+                            <p class="text-sm text-green-700">
+                                <strong>Deletion Complete!</strong>
+                                <span x-text="deletedCount"></span> resources deleted,
+                                <span x-text="failedCount"></span> failed.
+                            </p>
+                            <button @click="discoverResources()" class="mt-2 text-sm text-green-800 underline">
+                                Click here to refresh and see remaining resources
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function ociApp() {
+            return {
+                // Data
+                compartments: [],
+                selectedCompartment: '',
+                tenancyName: '',
+                resources: [],
+                totalResources: 0,
+                discoveryTime: '',
+                expandedTypes: [],
+                deleteCompartmentToo: false,
+
+                // Loading states
+                loadingCompartments: false,
+                discovering: false,
+                isDeleting: false,
+                deletionComplete: false,
+
+                // Progress tracking
+                deletionPhase: '',
+                deletionStatus: '',
+                deletedCount: 0,
+                failedCount: 0,
+                deletionProgress: 0,
+                resourcesStatus: {},  // {resource_id: {status, error}}
+                progressInterval: null,
+
+                // Initialization
+                init() {
+                    this.loadCompartments();
+                },
+
+                async loadCompartments() {
+                    this.loadingCompartments = true;
+                    try {
+                        const response = await fetch('/api/compartments');
+                        const data = await response.json();
+                        this.compartments = data.compartments;
+                        this.tenancyName = data.tenancy_name;
+                    } catch (error) {
+                        alert('Error loading compartments: ' + error.message);
+                    } finally {
+                        this.loadingCompartments = false;
+                    }
+                },
+
+                async discoverResources() {
+                    this.discovering = true;
+                    this.resources = [];
+                    this.resourcesStatus = {};
+                    this.deletionComplete = false;
+
+                    const startTime = Date.now();
+
+                    try {
+                        const response = await fetch('/api/discover', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({compartment_id: this.selectedCompartment})
+                        });
+
+                        const data = await response.json();
+                        this.resources = data.resources;
+                        this.totalResources = data.total_count;
+
+                        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                        this.discoveryTime = elapsed + 's';
+
+                        // Initialize all resources as pending
+                        this.resources.forEach(resource => {
+                            resource.items.forEach(item => {
+                                this.resourcesStatus[item.id] = {status: 'pending', error: null};
+                            });
+                        });
+                    } catch (error) {
+                        alert('Error discovering resources: ' + error.message);
+                    } finally {
+                        this.discovering = false;
+                    }
+                },
+
+                async deleteResources() {
+                    if (!confirm('Are you sure you want to delete these resources? This cannot be undone!')) {
+                        return;
+                    }
+
+                    this.isDeleting = true;
+                    this.deletionComplete = false;
+                    this.deletedCount = 0;
+                    this.failedCount = 0;
+                    this.deletionProgress = 0;
+
+                    try {
+                        // Start deletion
+                        const response = await fetch('/api/delete', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                compartment_id: this.selectedCompartment,
+                                delete_compartment: this.deleteCompartmentToo
+                            })
+                        });
+
+                        const data = await response.json();
+
+                        if (data.success) {
+                            // Start polling for progress
+                            this.startProgressPolling();
+                        } else {
+                            alert('Error starting deletion: ' + (data.error || 'Unknown error'));
+                            this.isDeleting = false;
+                        }
+                    } catch (error) {
+                        alert('Error starting deletion: ' + error.message);
+                        this.isDeleting = false;
+                    }
+                },
+
+                startProgressPolling() {
+                    this.progressInterval = setInterval(async () => {
+                        try {
+                            const response = await fetch(`/api/delete/progress/${this.selectedCompartment}`);
+                            const progress = await response.json();
+
+                            // Update progress data
+                            this.deletionPhase = progress.phase || 'Processing...';
+                            this.deletionStatus = `Currently: ${progress.current_resource || '...'}`;
+                            this.deletedCount = progress.deleted || 0;
+                            this.failedCount = progress.failed || 0;
+
+                            // Calculate progress percentage
+                            if (progress.total_resources > 0) {
+                                this.deletionProgress = Math.round((progress.processed / progress.total_resources) * 100);
+                            }
+
+                            // Update individual resource statuses
+                            if (progress.resources) {
+                                progress.resources.forEach(res => {
+                                    this.resourcesStatus[res.id] = {
+                                        status: res.status,
+                                        error: res.error
+                                    };
+                                });
+                            }
+
+                            // Check if complete
+                            if (progress.status === 'complete' || progress.status === 'error') {
+                                clearInterval(this.progressInterval);
+                                this.isDeleting = false;
+                                this.deletionComplete = true;
+                                this.deletionProgress = 100;
+                            }
+                        } catch (error) {
+                            console.error('Error polling progress:', error);
+                        }
+                    }, 1000);  // Poll every second
+                },
+
+                toggleResourceDetails(type) {
+                    const index = this.expandedTypes.indexOf(type);
+                    if (index === -1) {
+                        this.expandedTypes.push(type);
+                    } else {
+                        this.expandedTypes.splice(index, 1);
+                    }
+                },
+
+                getResourceStatus(resourceId) {
+                    return this.resourcesStatus[resourceId]?.status || 'pending';
+                },
+
+                getResourceError(resourceId) {
+                    return this.resourcesStatus[resourceId]?.error || '';
+                }
+            }
+        }
+    </script>
+</body>
+</html>

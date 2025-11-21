@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  oci-smart-delete:
+    # Use pre-built image from GitHub Container Registry (once published)
+    # Or build locally by uncommenting the 'build' section below
+    # image: ghcr.io/timmcfadden/oci-smartdelete:latest
+
+    # Build locally (recommended until image is published)
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: oci-smart-delete
+
+    ports:
+      - "8080:8080"
+
+    # SECURITY: Credentials provided at runtime via volume mount
+    # Your ~/.oci directory is mounted READ-ONLY
+    volumes:
+      - ~/.oci:/home/appuser/.oci:ro
+
+    # Alternative: Use environment variables (uncomment and create .env file)
+    # env_file:
+    #   - .env
+
+    # Restart policy
+    restart: unless-stopped
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8080', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits (adjust as needed)
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '1'
+    #       memory: 512M
+    #     reservations:
+    #       cpus: '0.5'
+    #       memory: 256M
+
+# ==============================================================================
+# USAGE INSTRUCTIONS
+# ==============================================================================
+#
+# Start the application:
+#   docker-compose up -d
+#
+# View logs:
+#   docker-compose logs -f
+#
+# Stop the application:
+#   docker-compose down
+#
+# Rebuild and restart:
+#   docker-compose up -d --build
+#
+# ==============================================================================
+# AUTHENTICATION OPTIONS
+# ==============================================================================
+#
+# Option 1: Volume Mount (Current - Best for local development)
+#   - Mounts your existing ~/.oci/config
+#   - Read-only for security (:ro)
+#   - Works with existing OCI CLI setup
+#
+# Option 2: Environment Variables (Best for CI/CD)
+#   1. Copy .env.example to .env
+#   2. Fill in your credentials in .env
+#   3. Uncomment the env_file section above
+#   4. Run: docker-compose up -d
+#
+# Option 3: Instance Principal (Best for OCI deployments)
+#   - Add to environment section:
+#       environment:
+#         - OCI_USE_INSTANCE_PRINCIPAL=true
+#   - Remove volumes section
+#   - Deploy to OCI Container Instances or Compute
+#
+# ==============================================================================
