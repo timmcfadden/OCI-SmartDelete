@@ -31,6 +31,7 @@ setup.bat
 
 The setup script will automatically:
 - Check Python installation
+- Create a Python virtual environment (keeps dependencies isolated)
 - Install required dependencies
 - Verify OCI credentials
 - Start the web server
@@ -223,9 +224,14 @@ Failed resource types:
 - Flask (for web interface)
 - Valid OCI credentials (CLI config file or environment variables)
 
-**Install dependencies:**
+**Install dependencies (recommended with virtual environment):**
 ```bash
-pip3 install -r requirements.txt
+# Create and activate virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
 ```
 
 ---
