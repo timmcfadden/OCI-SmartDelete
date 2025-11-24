@@ -297,6 +297,11 @@ RESOURCE_TYPE_MAP = {
         'method': 'delete_rule',
         'id_field': 'id',
     },
+    'EventRule': {  # Alias for EventsRule (OCI Search returns singular form)
+        'client': 'events.EventsClient',
+        'method': 'delete_rule',
+        'id_field': 'id',
+    },
     'ExadataInfrastructure': {
         'client': 'database.DatabaseClient',
         'method': 'delete_exadata_infrastructure',
