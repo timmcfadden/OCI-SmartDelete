@@ -71,26 +71,39 @@ fi
 
 echo ""
 
-# Step 3: Install dependencies
-echo "Step 3: Installing Python dependencies..."
+# Step 3: Set up virtual environment
+echo "Step 3: Setting up Python virtual environment..."
+echo ""
+
+# Create venv if it doesn't exist
+if [ ! -d "venv" ]; then
+    print_info "Creating virtual environment..."
+    python3 -m venv venv
+    print_success "Virtual environment created"
+else
+    print_success "Virtual environment already exists"
+fi
+
+# Activate virtual environment
+print_info "Activating virtual environment..."
+source venv/bin/activate
+
+# Install dependencies
+echo ""
+echo "Step 4: Installing Python dependencies..."
 echo ""
 print_info "Installing packages from requirements.txt..."
 
-if pip3 install -r requirements.txt --user --quiet 2>&1 | grep -v "already satisfied"; then
+if pip install -r requirements.txt --quiet 2>&1 | grep -v "already satisfied"; then
     print_success "Dependencies installed successfully"
 else
-    # If --user doesn't work, try without it
-    if pip3 install -r requirements.txt --quiet 2>&1 | grep -v "already satisfied"; then
-        print_success "Dependencies installed successfully"
-    else
-        print_success "All dependencies already installed"
-    fi
+    print_success "All dependencies already installed"
 fi
 
 echo ""
 
-# Step 4: Check for OCI CLI configuration
-echo "Step 4: Checking OCI CLI configuration..."
+# Step 5: Check for OCI CLI configuration
+echo "Step 5: Checking OCI CLI configuration..."
 echo ""
 echo "IMPORTANT: OCI CLI credentials are REQUIRED for this application to work."
 echo "If not found, you will need to set up OCI CLI before using this tool."
@@ -177,7 +190,7 @@ if [ "$OCI_CONFIG_FOUND" = false ]; then
     exit 1
 fi
 
-# Step 5: Start the application
+# Step 6: Start the application
 echo ""
 echo "================================================================================"
 echo "Starting OCI Smart Delete Web Interface"
@@ -199,5 +212,6 @@ if [ "$OCI_CONFIG_FOUND" = true ] && [ "$OCI_CONFIG_FILE" != "$HOME/.oci/config"
     export OCI_CONFIG_FILE="$OCI_CONFIG_FILE"
 fi
 
-# Start the application
-python3 web_app.py
+# Activate venv and start the application
+source venv/bin/activate
+python web_app.py

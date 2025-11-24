@@ -5,6 +5,7 @@ lib/
 bin/
 include/
 pyvenv.cfg
+venv/
 .venv/
 .vscode/
 .zed/
