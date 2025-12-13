@@ -347,44 +347,46 @@ class OCISmartDelete:
                 self.resource_type = res_type
 
         for resource_type, config in self.NON_SEARCHABLE_RESOURCE_TYPES.items():
-            try:
-                client = self._get_client(config['client'], self.region)
-                list_method = getattr(client, config['list_method'])
-                list_kwargs = config['list_kwargs'](self.compartment_id)
+            # Check all subscribed regions for non-searchable resources
+            for region in self.regions:
+                try:
+                    client = self._get_client(config['client'], region)
+                    list_method = getattr(client, config['list_method'])
+                    list_kwargs = config['list_kwargs'](self.compartment_id)
 
-                # Handle pagination
-                resources = []
-                page = None
-                while True:
-                    if page:
-                        list_kwargs['page'] = page
-                    response = list_method(**list_kwargs)
+                    # Handle pagination
+                    resources = []
+                    page = None
+                    while True:
+                        if page:
+                            list_kwargs['page'] = page
+                        response = list_method(**list_kwargs)
 
-                    items = getattr(response.data, config['items_attr'], response.data)
-                    if items is None:
-                        items = []
+                        items = getattr(response.data, config['items_attr'], response.data)
+                        if items is None:
+                            items = []
 
-                    for item in items:
-                        # Check lifecycle state
-                        state = getattr(item, config['state_attr'], None)
-                        if state and state in config['skip_states']:
-                            continue
+                        for item in items:
+                            # Check lifecycle state
+                            state = getattr(item, config['state_attr'], None)
+                            if state and state in config['skip_states']:
+                                continue
 
-                        # Create a wrapper object that matches the search result format
-                        resource_id = getattr(item, config['id_attr'])
-                        display_name = getattr(item, config['name_attr'], resource_id)
-                        resources.append(NonSearchableResource(resource_id, display_name, resource_type))
+                            # Create a wrapper object that matches the search result format
+                            resource_id = getattr(item, config['id_attr'])
+                            display_name = getattr(item, config['name_attr'], resource_id)
+                            resources.append(NonSearchableResource(resource_id, display_name, resource_type))
 
-                    if not hasattr(response, 'has_next_page') or not response.has_next_page:
-                        break
-                    page = response.next_page
+                        if not hasattr(response, 'has_next_page') or not response.has_next_page:
+                            break
+                        page = response.next_page
 
-                if resources:
-                    resources_by_type[resource_type].extend(resources)
-                    logger.info(f"  Discovered {len(resources)} non-searchable {resource_type} resources")
+                    if resources:
+                        resources_by_type[resource_type].extend(resources)
+                        logger.info(f"  Discovered {len(resources)} non-searchable {resource_type} resources in {region}")
 
-            except Exception as e:
-                logger.warning(f"Error discovering non-searchable {resource_type} resources: {e}")
+                except Exception as e:
+                    logger.warning(f"Error discovering non-searchable {resource_type} resources in {region}: {e}")
 
     def _delete_resource(self, resource, resource_type_config, region, retry_count=0):
         """Delete a single resource"""
@@ -1008,7 +1010,7 @@ class OCISmartDelete:
         logger.info(f"Successfully deleted: {total_deleted} resources")
 
         if total_scheduled > 0:
-            logger.info(f"Scheduled for deletion: {total_scheduled} resources")
+            logger.info(f"Scheduled for deletion (OCI retention): {total_scheduled} resources")
             logger.info("\nScheduled resource types (OCI 7-30 day retention period):")
             for rtype, count in sorted(self.scheduled_count.items()):
                 logger.info(f"  - {rtype}: {count}")

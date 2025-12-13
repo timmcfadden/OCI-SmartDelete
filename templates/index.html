@@ -295,7 +295,7 @@
                     </div>
                     <div class="text-xs text-gray-600 flex justify-between">
                         <span><span x-text="deletedCount"></span> deleted</span>
-                        <span x-show="scheduledCount > 0" class="text-yellow-600"><span x-text="scheduledCount"></span> scheduled</span>
+                        <span x-show="scheduledCount > 0" class="text-yellow-600"><span x-text="scheduledCount"></span> scheduled for deletion</span>
                         <span><span x-text="failedCount"></span> failed</span>
                         <span><span x-text="deletionProgress"></span>% complete</span>
                     </div>
@@ -328,7 +328,7 @@
                             <p class="text-sm text-green-700">
                                 <strong>Deletion Complete!</strong>
                                 <span x-text="deletedCount"></span> resources deleted,
-                                <span x-show="scheduledCount > 0" class="text-yellow-700"><span x-text="scheduledCount"></span> scheduled,</span>
+                                <span x-show="scheduledCount > 0" class="text-yellow-700"><span x-text="scheduledCount"></span> scheduled for deletion,</span>
                                 <span x-text="failedCount"></span> failed.
                             </p>
                             <!-- Scheduled resources message -->
