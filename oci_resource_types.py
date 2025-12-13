@@ -27,9 +27,9 @@ RESOURCE_TYPE_MAP = {
         'id_field': 'id',
     },
     'Api': {
-        'client': 'apigateway.ApiClient',
+        'client': 'apigateway.ApiGatewayClient',
         'method': 'delete_api',
-        'id_field': 'id',
+        'id_field': 'api_id',
     },
     'ApiDeployment': {
         'client': 'apigateway.DeploymentClient',
@@ -40,6 +40,16 @@ RESOURCE_TYPE_MAP = {
         'client': 'apigateway.GatewayClient',
         'method': 'delete_gateway',
         'id_field': 'id',
+    },
+    'ApiGatewayApi': {  # Alias for Api (OCI Search returns this form)
+        'client': 'apigateway.ApiGatewayClient',
+        'method': 'delete_api',
+        'id_field': 'api_id',
+    },
+    'ApmDomain': {
+        'client': 'apm_control_plane.ApmDomainClient',
+        'method': 'delete_apm_domain',
+        'id_field': 'apm_domain_id',
     },
     'Application': {
         'client': 'functions.FunctionsManagementClient',
@@ -152,7 +162,7 @@ RESOURCE_TYPE_MAP = {
         'id_field': 'id',
     },
     'ClusterNetwork': {
-        'client': 'compute_management.ComputeManagementClient',
+        'client': 'core.ComputeManagementClient',
         'method': 'terminate_cluster_network',
         'id_field': 'id',
     },
@@ -374,12 +384,12 @@ RESOURCE_TYPE_MAP = {
         'wait_states': ['TERMINATED'],
     },
     'InstanceConfiguration': {
-        'client': 'compute_management.ComputeManagementClient',
+        'client': 'core.ComputeManagementClient',
         'method': 'delete_instance_configuration',
         'id_field': 'id',
     },
     'InstancePool': {
-        'client': 'compute_management.ComputeManagementClient',
+        'client': 'core.ComputeManagementClient',
         'method': 'terminate_instance_pool',
         'id_field': 'id',
     },
@@ -413,6 +423,7 @@ RESOURCE_TYPE_MAP = {
         'client': 'logging.LoggingManagementClient',
         'method': 'delete_log',
         'id_field': 'id',
+        'special': 'log',  # Needs log_group_id
     },
     'LogAnalyticsEntity': {
         'client': 'log_analytics.LogAnalyticsClient',
@@ -596,6 +607,11 @@ RESOURCE_TYPE_MAP = {
         'method': 'delete_tsig_key',
         'id_field': 'id',
     },
+    'DnsTsigKey': {  # Alias for TsigKey (OCI Search returns this form)
+        'client': 'dns.DnsClient',
+        'method': 'delete_tsig_key',
+        'id_field': 'id',
+    },
     'User': {
         'client': 'identity.IdentityClient',
         'method': 'delete_user',
@@ -659,6 +675,93 @@ RESOURCE_TYPE_MAP = {
     'VolumeGroupBackup': {
         'client': 'core.BlockstorageClient',
         'method': 'delete_volume_group_backup',
+        'id_field': 'id',
+    },
+    # Additional resource types discovered during testing
+    'WebAppFirewallPolicy': {
+        'client': 'waf.WafClient',
+        'method': 'delete_web_app_firewall_policy',
+        'id_field': 'id',
+    },
+    'DevOpsProject': {
+        'client': 'devops.DevopsClient',
+        'method': 'delete_project',
+        'id_field': 'project_id',
+        'dependencies': ['DevOpsRepository'],
+    },
+    'DevOpsRepository': {
+        'client': 'devops.DevopsClient',
+        'method': 'delete_repository',
+        'id_field': 'repository_id',
+    },
+    'ContainerRepo': {
+        'client': 'artifacts.ArtifactsClient',
+        'method': 'delete_container_repository',
+        'id_field': 'id',
+    },
+    'NoSQLTable': {
+        'client': 'nosql.NosqlClient',
+        'method': 'delete_table',
+        'id_field': 'id',
+    },
+    'FunctionsApplication': {
+        'client': 'functions.FunctionsManagementClient',
+        'method': 'delete_application',
+        'id_field': 'id',
+    },
+    'ClustersCluster': {
+        'client': 'container_engine.ContainerEngineClient',
+        'method': 'delete_cluster',
+        'id_field': 'id',
+    },
+    'StreamPool': {
+        'client': 'streaming.StreamAdminClient',
+        'method': 'delete_stream_pool',
+        'id_field': 'id',
+    },
+    'DnsZone': {
+        'client': 'dns.DnsClient',
+        'method': 'delete_zone',
+        'id_field': 'id',
+    },
+    'NetworkFirewallPolicy': {
+        'client': 'network_firewall.NetworkFirewallClient',
+        'method': 'delete_network_firewall_policy',
+        'id_field': 'id',
+    },
+    'EmailSender': {
+        'client': 'email.EmailClient',
+        'method': 'delete_sender',
+        'id_field': 'id',
+    },
+    'Vlan': {
+        'client': 'core.VirtualNetworkClient',
+        'method': 'delete_vlan',
+        'id_field': 'id',
+    },
+    'HttpMonitor': {
+        'client': 'healthchecks.HealthChecksClient',
+        'method': 'delete_http_monitor',
+        'id_field': 'id',
+    },
+    'PingMonitor': {
+        'client': 'healthchecks.HealthChecksClient',
+        'method': 'delete_ping_monitor',
+        'id_field': 'id',
+    },
+    'Snapshot': {
+        'client': 'file_storage.FileStorageClient',
+        'method': 'delete_snapshot',
+        'id_field': 'id',
+    },
+    'DISWorkspace': {
+        'client': 'data_integration.DataIntegrationClient',
+        'method': 'delete_workspace',
+        'id_field': 'id',
+    },
+    'GenericRepository': {
+        'client': 'artifacts.ArtifactsClient',
+        'method': 'delete_repository',
         'id_field': 'id',
     },
 }

@@ -44,6 +44,37 @@ class OCISmartDelete:
     # This is populated from oci_resource_types.py which contains 124+ resource types
     RESOURCE_TYPE_MAP = RESOURCE_TYPE_MAP
 
+    # Resource types that should be skipped during deletion because they are:
+    # - Auto-deleted when their parent resource is deleted
+    # - Cannot be explicitly deleted (managed resources)
+    # - Don't have a proper delete API
+    SKIP_RESOURCE_TYPES = {
+        'PrivateIp',       # Primary IPs are auto-deleted with VNICs/Instances
+        'Vnic',            # Auto-deleted when Instance is terminated
+        'DnsResolver',     # Auto-managed by VCN, no delete API
+        'DnsView',         # Auto-managed by VCN, protected resource
+        'CustomerDnsZone', # Auto-managed by VCN, protected resource
+        'BootVolumeAttachment',  # Auto-deleted when Instance is terminated
+        'VolumeAttachment',      # Auto-deleted when Instance is terminated
+        'DrgRouteTable',         # Auto-deleted when DRG is deleted (default tables can't be deleted)
+        'DrgRouteDistribution',  # Auto-deleted when DRG is deleted (default distributions can't be deleted)
+    }
+
+    # Resource types that cannot be discovered via OCI Resource Search API
+    # These need to be listed directly using their respective clients
+    NON_SEARCHABLE_RESOURCE_TYPES = {
+        'NetworkLoadBalancer': {
+            'client': 'network_load_balancer.NetworkLoadBalancerClient',
+            'list_method': 'list_network_load_balancers',
+            'list_kwargs': lambda compartment_id: {'compartment_id': compartment_id},
+            'items_attr': 'items',
+            'id_attr': 'id',
+            'name_attr': 'display_name',
+            'state_attr': 'lifecycle_state',
+            'skip_states': ['DELETED', 'DELETING'],
+        },
+    }
+
     # Legacy small map (kept for reference, overridden by import above)
     _LEGACY_MAP = {
         'Instance': {
@@ -277,7 +308,9 @@ class OCISmartDelete:
                     )
 
                 for item in response.data.items:
-                    resources_by_type[item.resource_type].append(item)
+                    # Skip resource types that are auto-deleted with their parent
+                    if item.resource_type not in self.SKIP_RESOURCE_TYPES:
+                        resources_by_type[item.resource_type].append(item)
 
                 if not response.has_next_page:
                     break
@@ -287,6 +320,9 @@ class OCISmartDelete:
             logger.error(f"Error discovering resources: {e}")
             return {}
 
+        # Also discover non-searchable resources (not indexed by OCI Resource Search API)
+        self._discover_non_searchable_resources(resources_by_type)
+
         # Log what we found
         total = sum(len(resources) for resources in resources_by_type.values())
         logger.info(f"Found {total} resources across {len(resources_by_type)} resource types")
@@ -295,6 +331,56 @@ class OCISmartDelete:
             logger.info(f"  {resource_type}: {len(resources)}")
 
         return resources_by_type
+
+    def _discover_non_searchable_resources(self, resources_by_type):
+        """Discover resources that are not indexed by OCI Resource Search API"""
+
+        # Simple wrapper class to match search result structure
+        class NonSearchableResource:
+            def __init__(self, identifier, name, res_type):
+                self.identifier = identifier
+                self.display_name = name
+                self.resource_type = res_type
+
+        for resource_type, config in self.NON_SEARCHABLE_RESOURCE_TYPES.items():
+            try:
+                client = self._get_client(config['client'], self.region)
+                list_method = getattr(client, config['list_method'])
+                list_kwargs = config['list_kwargs'](self.compartment_id)
+
+                # Handle pagination
+                resources = []
+                page = None
+                while True:
+                    if page:
+                        list_kwargs['page'] = page
+                    response = list_method(**list_kwargs)
+
+                    items = getattr(response.data, config['items_attr'], response.data)
+                    if items is None:
+                        items = []
+
+                    for item in items:
+                        # Check lifecycle state
+                        state = getattr(item, config['state_attr'], None)
+                        if state and state in config['skip_states']:
+                            continue
+
+                        # Create a wrapper object that matches the search result format
+                        resource_id = getattr(item, config['id_attr'])
+                        display_name = getattr(item, config['name_attr'], resource_id)
+                        resources.append(NonSearchableResource(resource_id, display_name, resource_type))
+
+                    if not hasattr(response, 'has_next_page') or not response.has_next_page:
+                        break
+                    page = response.next_page
+
+                if resources:
+                    resources_by_type[resource_type].extend(resources)
+                    logger.info(f"  Discovered {len(resources)} non-searchable {resource_type} resources")
+
+            except Exception as e:
+                logger.warning(f"Error discovering non-searchable {resource_type} resources: {e}")
 
     def _delete_resource(self, resource, resource_type_config, region, retry_count=0):
         """Delete a single resource"""
@@ -309,18 +395,121 @@ class OCISmartDelete:
 
             logger.info(f"Deleting {resource.resource_type}: {resource_name} (ID: {resource_id})")
 
-            # Get the appropriate client
-            client = self._get_client(resource_type_config['client'], region)
+            # Get the appropriate client (skip for special types that need custom client creation)
+            special_type = resource_type_config.get('special')
+            if special_type not in ('key',):  # Types that need custom client creation
+                client = self._get_client(resource_type_config['client'], region)
+            else:
+                client = None  # Will be created in special handling
 
-            # Special handling for buckets (need namespace)
-            if resource_type_config.get('special') == 'bucket':
+            # Special handling for buckets (need namespace and bucket name, not OCID)
+            if special_type == 'bucket':
                 namespace = client.get_namespace().data
-                getattr(client, resource_type_config['method'])(
-                    namespace_name=namespace,
-                    bucket_name=resource_id
+                # Use display_name for bucket name, not the OCID
+                bucket_name = resource_name
+
+                # First, delete all objects in the bucket
+                try:
+                    # List and delete all objects (including multipart uploads)
+                    logger.info(f"Emptying bucket: {bucket_name}")
+
+                    # Delete all objects
+                    object_list = client.list_objects(namespace, bucket_name, fields='name').data
+                    while object_list.objects:
+                        for obj in object_list.objects:
+                            client.delete_object(namespace, bucket_name, obj.name)
+                        if object_list.next_start_with:
+                            object_list = client.list_objects(
+                                namespace, bucket_name,
+                                start=object_list.next_start_with,
+                                fields='name'
+                            ).data
+                        else:
+                            break
+
+                    # Abort any multipart uploads
+                    uploads = client.list_multipart_uploads(namespace, bucket_name).data
+                    for upload in uploads:
+                        client.abort_multipart_upload(namespace, bucket_name, upload.object, upload.upload_id)
+
+                    # Delete all preauthenticated requests
+                    pars = client.list_preauthenticated_requests(namespace, bucket_name).data
+                    for par in pars:
+                        try:
+                            client.delete_preauthenticated_request(namespace, bucket_name, par.id)
+                        except Exception as par_e:
+                            logger.warning(f"Error deleting PAR {par.id}: {par_e}")
+
+                except Exception as e:
+                    logger.warning(f"Error emptying bucket {bucket_name}: {e}")
+
+                # Now delete the bucket
+                client.delete_bucket(namespace, bucket_name)
+            # Special handling for Vault deletion (needs schedule_vault_deletion_details)
+            elif special_type == 'vault':
+                # Schedule vault deletion for the minimum waiting period (7 days)
+                from datetime import datetime, timedelta
+                deletion_time = datetime.utcnow() + timedelta(days=7)
+                schedule_details = oci.key_management.models.ScheduleVaultDeletionDetails(
+                    time_of_deletion=deletion_time
                 )
+                client.schedule_vault_deletion(resource_id, schedule_details)
+                logger.info(f"Vault scheduled for deletion on {deletion_time.isoformat()}")
+            # Special handling for Key deletion (needs vault's management endpoint)
+            elif special_type == 'key':
+                # Keys require the management endpoint from their parent vault
+                # Extract vault ID from key ID (format: ocid1.key.oc1.<region>.<vault_id>.<key_id>)
+                # We need to look up the vault to get its management endpoint
+                try:
+                    # Get the key's vault by listing vaults in compartment
+                    vault_client = self._get_client('key_management.KmsVaultClient', region)
+                    vaults = vault_client.list_vaults(self.compartment_id).data
+
+                    # Find the vault that contains this key by checking if key ID contains vault's crypto endpoint portion
+                    key_vault = None
+                    for vault in vaults:
+                        if vault.lifecycle_state in ['ACTIVE', 'PENDING_DELETION']:
+                            # Key ID contains a portion that matches the vault
+                            if vault.id.split('.')[-2] in resource_id:
+                                key_vault = vault
+                                break
+
+                    if not key_vault:
+                        # Try to get vault from the key's ID pattern
+                        # Key OCID format: ocid1.key.oc1.<region>.<vault_crypto_endpoint_id>.<key_suffix>
+                        for vault in vaults:
+                            if vault.lifecycle_state in ['ACTIVE', 'PENDING_DELETION']:
+                                key_vault = vault
+                                break
+
+                    if key_vault and key_vault.management_endpoint:
+                        # Create KmsManagementClient with the vault's management endpoint
+                        config_copy = self.config.copy()
+                        config_copy['region'] = region
+                        kms_client = oci.key_management.KmsManagementClient(
+                            config_copy,
+                            service_endpoint=key_vault.management_endpoint,
+                            signer=self.signer
+                        )
+                        # Schedule key deletion
+                        from datetime import datetime, timedelta
+                        deletion_time = datetime.utcnow() + timedelta(days=7)
+                        schedule_details = oci.key_management.models.ScheduleKeyDeletionDetails(
+                            time_of_deletion=deletion_time
+                        )
+                        kms_client.schedule_key_deletion(resource_id, schedule_details)
+                        logger.info(f"Key scheduled for deletion on {deletion_time.isoformat()}")
+                    else:
+                        logger.warning(f"Could not find active vault for key {resource_id}, skipping")
+                        # Mark as success since the vault might already be scheduled for deletion
+                        self.deleted_count[resource.resource_type] += 1
+                        self._update_resource_status(resource_id, resource_name, resource.resource_type, 'deleted')
+                        return True
+                except Exception as e:
+                    logger.warning(f"Error scheduling key deletion: {e}")
+                    raise
             # Special handling for log analytics entities (need namespace)
-            elif resource_type_config.get('special') == 'log_analytics_entity':
+            elif special_type == 'log_analytics_entity':
                 # Log Analytics namespace is the same as Object Storage namespace
                 # Get it from Object Storage client
                 object_storage_client = self._get_client('object_storage.ObjectStorageClient', region)
@@ -329,6 +518,27 @@ class OCISmartDelete:
                     namespace_name=namespace,
                     log_analytics_entity_id=resource_id
                 )
+            # Special handling for Log resources (need log_group_id and log_id)
+            elif special_type == 'log':
+                # Logs require both log_group_id and log_id
+                # We need to find which log group contains this log
+                log_groups = client.list_log_groups(self.compartment_id).data
+                log_found = False
+                for log_group in log_groups:
+                    try:
+                        logs = client.list_logs(log_group.id).data
+                        for log in logs:
+                            if log.id == resource_id:
+                                client.delete_log(log_group.id, resource_id)
+                                log_found = True
+                                break
+                        if log_found:
+                            break
+                    except Exception:
+                        continue
+                if not log_found:
+                    logger.warning(f"Could not find log group for log {resource_id}")
+                    raise Exception(f"Log group not found for log {resource_id}")
             else:
                 # Standard deletion
                 delete_method = getattr(client, resource_type_config['method'])
@@ -359,16 +569,54 @@ class OCISmartDelete:
         except oci.exceptions.ServiceError as e:
             # Handle specific errors
             if e.status == 404:
-                logger.debug(f"Resource already deleted: {resource_id}")
+                logger.info(f"Resource already deleted or not found: {resource_name}")
                 self._update_resource_status(resource_id, resource_name, resource.resource_type, 'deleted')
                 return True
             elif e.status == 409:  # Conflict - usually dependency issue
-                if retry_count < self.max_retries:
+                error_msg = str(e.message)
+                # Check if this is a "default" resource that will be auto-deleted with VCN
+                if 'is the default for VCN' in error_msg:
+                    logger.info(f"Skipping default resource (will be auto-deleted with VCN): {resource_name}")
+                    self._update_resource_status(resource_id, resource_name, resource.resource_type, 'deleted')
+                    self.deleted_count[resource.resource_type] += 1
+                    return True
+                # Check for protected resources (DNS zones attached to VCN, etc.)
+                elif 'Operation not allowed on protected resource' in error_msg:
+                    logger.info(f"Skipping protected resource (will be auto-deleted with parent): {resource_name}")
+                    self._update_resource_status(resource_id, resource_name, resource.resource_type, 'deleted')
+                    self.deleted_count[resource.resource_type] += 1
+                    return True
+                # Boot volume still attached - instance is still terminating
+                elif 'may not be deleted while attached' in error_msg:
+                    if retry_count < self.max_retries:
+                        logger.warning(f"Resource still attached (waiting for parent to terminate): {resource_name}")
+                        return False  # Will retry
+                    else:
+                        # After retries, it's likely that boot volume deletion is disabled on the instance
+                        # and the volume is orphaned. Report as failed.
+                        logger.error(f"Failed to delete {resource_id} (still attached after instance terminated): {e.message}")
+                        self.failed_count[resource.resource_type] += 1
+                        self._update_resource_status(resource_id, resource_name, resource.resource_type, 'failed', e.message)
+                        return False
+                elif retry_count < self.max_retries:
                     logger.warning(f"Dependency conflict deleting {resource_id}, will retry later")
                     # Don't update status yet - we'll retry
                     return False
                 else:
                     logger.error(f"Failed to delete {resource_id} after {self.max_retries} retries: {e.message}")
+                    self.failed_count[resource.resource_type] += 1
+                    self._update_resource_status(resource_id, resource_name, resource.resource_type, 'failed', e.message)
+                    return False
+            elif e.status == 400:
+                error_msg = str(e.message)
+                # Primary IPs cannot be deleted - they're deleted with the VNIC/Instance
+                if 'Cannot delete primary private IP' in error_msg:
+                    logger.info(f"Skipping primary IP (will be auto-deleted with Instance): {resource_name}")
+                    self._update_resource_status(resource_id, resource_name, resource.resource_type, 'deleted')
+                    self.deleted_count[resource.resource_type] += 1
+                    return True
+                else:
+                    logger.error(f"Error deleting {resource_id}: {e.message}")
                     self.failed_count[resource.resource_type] += 1
                     self._update_resource_status(resource_id, resource_name, resource.resource_type, 'failed', e.message)
                     return False
@@ -384,24 +632,81 @@ class OCISmartDelete:
             self._update_resource_status(resource_id, resource_name, resource.resource_type, 'failed', error_msg)
             return False
 
+    # Resources that must be deleted AFTER certain other resources
+    # (not explicitly in dependencies, but logically required)
+    DELETE_LAST = {
+        'BootVolume': ['Instance'],    # Boot volumes can only be deleted after instance is terminated
+        'Volume': ['Instance'],        # Volumes should be deleted after instance (if attached)
+        'Vcn': ['Instance', 'LoadBalancer', 'MountTarget', 'DbSystem', 'MysqlDbSystem'],  # VCN needs all network users gone
+    }
+
     def _get_deletion_order(self, resource_types):
         """
         Determine deletion order based on dependencies
         Returns list of resource types in order they should be deleted
         """
-        # Build dependency graph
-        has_dependencies = []
-        no_dependencies = []
+        # Priority order (higher priority = delete earlier)
+        # Resources not in this list get medium priority
+        priority_order = {
+            # Delete compute/database resources first (they use networking)
+            'LogAnalyticsEntity': 100,
+            'Key': 98,           # Keys should be deleted before Vaults
+            'PublicIp': 95,      # Reserved public IPs should be freed early
+            'Instance': 90,
+            'ContainerInstance': 90,
+            'ClustersCluster': 88,  # OKE clusters before subnets
+            'FunctionsApplication': 87,  # Functions before networking
+            'DbSystem': 85,
+            'MysqlDbSystem': 85,
+            'AutonomousDatabase': 85,
+            'LoadBalancer': 80,
+            'NetworkLoadBalancer': 80,
+            'MountTarget': 80,
+            'Bastion': 78,       # Bastions use subnets
+            'DevOpsProject': 75,
+            'WebAppFirewallPolicy': 75,
+            'NetworkFirewallPolicy': 74,  # Network firewall policies before networking
+            'EmailSender': 73,            # Email senders can be deleted early
+            'HttpMonitor': 72,            # Health checks can be deleted early
+            'PingMonitor': 72,
+            'DISWorkspace': 71,           # Data Integration workspace before networking
+            # Then storage/data resources (after instances release them)
+            'Stream': 70,
+            'StreamPool': 69,
+            'VolumeGroup': 69,    # VolumeGroup before Volumes
+            'BootVolume': 68,
+            'Volume': 68,
+            'VolumeBackup': 67,           # Backups before volumes
+            'BootVolumeBackup': 67,
+            'NoSQLTable': 66,
+            'Bucket': 65,
+            'ContainerRepo': 65,
+            'GenericRepository': 65,      # Artifact repository
+            'Snapshot': 64,               # File system snapshots before file systems
+            'Export': 63,                 # Exports before file systems
+            'FileSystem': 62,
+            'Vault': 61,                  # After Keys
+            # Then networking resources
+            'LocalPeeringGateway': 55,
+            'Drg': 52,
+            'Subnet': 50,
+            'Vlan': 48,          # VLANs are similar to subnets
+            'NatGateway': 45,
+            'InternetGateway': 45,
+            'ServiceGateway': 45,
+            'NetworkSecurityGroup': 42,
+            'RouteTable': 40,
+            'SecurityList': 40,
+            'DHCPOptions': 35,
+            'DnsZone': 30,
+            'Vcn': 10,  # VCN should be deleted last
+        }
 
-        for rtype in resource_types:
-            config = self.RESOURCE_TYPE_MAP.get(rtype, {})
-            if 'dependencies' in config:
-                has_dependencies.append(rtype)
-            else:
-                no_dependencies.append(rtype)
+        def get_priority(rtype):
+            return priority_order.get(rtype, 60)  # Default medium priority
 
-        # Delete things without dependencies first, then things with dependencies
-        return no_dependencies + has_dependencies
+        # Sort by priority (highest first)
+        return sorted(resource_types, key=get_priority, reverse=True)
 
     def delete_resources_by_type(self, resource_type, resources):
         """Delete all resources of a specific type"""
