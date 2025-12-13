@@ -18,6 +18,9 @@
         .resource-failed {
             background-color: #fee2e2;
         }
+        .resource-scheduled {
+            background-color: #fef3c7;
+        }
         .spinner-circle {
             border: 3px solid #f3f3f3;
             border-top: 3px solid #3b82f6;
@@ -208,6 +211,7 @@
                                                 :class="{
                                                     'resource-deleted': getResourceStatus(item.id) === 'deleted',
                                                     'resource-deleting': getResourceStatus(item.id) === 'deleting',
+                                                    'resource-scheduled': getResourceStatus(item.id) === 'scheduled',
                                                     'resource-failed': getResourceStatus(item.id) === 'failed'
                                                 }">
                                                 <td class="py-2" x-text="item.name"></td>
@@ -221,6 +225,8 @@
                                                         <div class="spinner-circle inline-block mr-1"></div> Deleting...
                                                     </span>
                                                     <span x-show="getResourceStatus(item.id) === 'deleted'" class="text-green-600">✓ Deleted</span>
+                                                    <span x-show="getResourceStatus(item.id) === 'scheduled'" class="text-yellow-600"
+                                                          :title="getResourceError(item.id)">⏱ Scheduled (7-30 days)</span>
                                                     <span x-show="getResourceStatus(item.id) === 'failed'" class="text-red-600"
                                                           :title="getResourceError(item.id)">✗ Failed</span>
                                                 </td>
@@ -289,6 +295,7 @@
                     </div>
                     <div class="text-xs text-gray-600 flex justify-between">
                         <span><span x-text="deletedCount"></span> deleted</span>
+                        <span x-show="scheduledCount > 0" class="text-yellow-600"><span x-text="scheduledCount"></span> scheduled</span>
                         <span><span x-text="failedCount"></span> failed</span>
                         <span><span x-text="deletionProgress"></span>% complete</span>
                     </div>
@@ -321,7 +328,18 @@
                             <p class="text-sm text-green-700">
                                 <strong>Deletion Complete!</strong>
                                 <span x-text="deletedCount"></span> resources deleted,
+                                <span x-show="scheduledCount > 0" class="text-yellow-700"><span x-text="scheduledCount"></span> scheduled,</span>
                                 <span x-text="failedCount"></span> failed.
+                            </p>
+                            <!-- Scheduled resources message -->
+                            <p x-show="scheduledCount > 0" class="text-sm text-yellow-700 mt-2">
+                                ⏱ <span x-text="scheduledCount"></span> Vault(s)/Key(s) are scheduled for deletion.
+                                OCI requires a 7-30 day retention period - no action needed.
+                            </p>
+                            <!-- Retriable failures message -->
+                            <p x-show="retriableCount > 0" class="text-sm text-blue-700 mt-2">
+                                ↻ <span x-text="retriableCount"></span> failure(s) may succeed on retry.
+                                Try running again in 2-3 minutes.
                             </p>
                             <button @click="discoverResources()" class="mt-2 text-sm text-green-800 underline">
                                 Click here to refresh and see remaining resources
@@ -401,6 +419,8 @@
                 deletionStatus: '',
                 deletedCount: 0,
                 failedCount: 0,
+                scheduledCount: 0,  // Vaults/Keys in PENDING_DELETION
+                retriableCount: 0,  // Failures that may succeed on re-run
                 deletionProgress: 0,
                 resourcesStatus: {},  // {resource_id: {status, error}}
                 progressInterval: null,
@@ -468,6 +488,8 @@
                     this.deletionComplete = false;
                     this.deletedCount = 0;
                     this.failedCount = 0;
+                    this.scheduledCount = 0;
+                    this.retriableCount = 0;
                     this.deletionProgress = 0;
 
                     try {
@@ -546,6 +568,8 @@
                             this.deletionStatus = `Currently: ${progress.current_resource || '...'}`;
                             this.deletedCount = progress.deleted || 0;
                             this.failedCount = progress.failed || 0;
+                            this.scheduledCount = progress.scheduled || 0;
+                            this.retriableCount = progress.retriable || 0;
 
                             // Calculate progress percentage
                             if (progress.total_resources > 0) {

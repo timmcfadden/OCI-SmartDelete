@@ -226,6 +226,8 @@ class OCISmartDelete:
         # Track deletion stats
         self.deleted_count = defaultdict(int)
         self.failed_count = defaultdict(int)
+        self.scheduled_count = defaultdict(int)  # Vaults/Keys in PENDING_DELETION (7-30 day wait)
+        self.retriable_count = defaultdict(int)  # Failures that may succeed on re-run
 
         # Progress tracking for real-time feedback
         self.progress = {
@@ -233,6 +235,8 @@ class OCISmartDelete:
             'processed': 0,
             'deleted': 0,
             'failed': 0,
+            'scheduled': 0,  # Vaults/Keys scheduled for deletion
+            'retriable': 0,  # Failures that may succeed on re-run
             'current_type': '',
             'current_resource': '',
             'status': 'idle',  # idle, discovering, deleting, cleanup, complete
@@ -586,6 +590,14 @@ class OCISmartDelete:
                     self._update_resource_status(resource_id, resource_name, resource.resource_type, 'deleted')
                     self.deleted_count[resource.resource_type] += 1
                     return True
+                # Vault/Key already in PENDING_DELETION state (OCI 7-30 day retention)
+                elif "PENDING_DELETION" in error_msg and resource.resource_type in ('Vault', 'Key'):
+                    logger.info(f"Vault/Key already scheduled for deletion (7-30 day OCI retention): {resource_name}")
+                    self._update_resource_status(resource_id, resource_name, resource.resource_type, 'scheduled',
+                                                 'Scheduled for deletion (7-30 day OCI retention period)')
+                    self.scheduled_count[resource.resource_type] += 1
+                    self.progress['scheduled'] = sum(self.scheduled_count.values())
+                    return True  # Not a failure - just waiting for OCI retention period
                 # Boot volume still attached - instance is still terminating
                 elif 'may not be deleted while attached' in error_msg:
                     if retry_count < self.max_retries:
@@ -593,19 +605,24 @@ class OCISmartDelete:
                         return False  # Will retry
                     else:
                         # After retries, it's likely that boot volume deletion is disabled on the instance
-                        # and the volume is orphaned. Report as failed.
+                        # and the volume is orphaned. Report as retriable failure.
                         logger.error(f"Failed to delete {resource_id} (still attached after instance terminated): {e.message}")
                         self.failed_count[resource.resource_type] += 1
+                        self.retriable_count[resource.resource_type] += 1
                         self._update_resource_status(resource_id, resource_name, resource.resource_type, 'failed', e.message)
+                        self.progress['retriable'] = sum(self.retriable_count.values())
                         return False
                 elif retry_count < self.max_retries:
                     logger.warning(f"Dependency conflict deleting {resource_id}, will retry later")
                     # Don't update status yet - we'll retry
                     return False
                 else:
+                    # After max retries, mark as retriable failure (dependency conflicts often resolve with time)
                     logger.error(f"Failed to delete {resource_id} after {self.max_retries} retries: {e.message}")
                     self.failed_count[resource.resource_type] += 1
+                    self.retriable_count[resource.resource_type] += 1
                     self._update_resource_status(resource_id, resource_name, resource.resource_type, 'failed', e.message)
+                    self.progress['retriable'] = sum(self.retriable_count.values())
                     return False
             elif e.status == 400:
                 error_msg = str(e.message)
@@ -985,13 +1002,29 @@ class OCISmartDelete:
 
         total_deleted = sum(self.deleted_count.values())
         total_failed = sum(self.failed_count.values())
+        total_scheduled = sum(self.scheduled_count.values())
+        total_retriable = sum(self.retriable_count.values())
 
         logger.info(f"Successfully deleted: {total_deleted} resources")
+
+        if total_scheduled > 0:
+            logger.info(f"Scheduled for deletion: {total_scheduled} resources")
+            logger.info("\nScheduled resource types (OCI 7-30 day retention period):")
+            for rtype, count in sorted(self.scheduled_count.items()):
+                logger.info(f"  - {rtype}: {count}")
+            logger.info("\nNote: Vaults/Keys in PENDING_DELETION will be automatically purged by OCI.")
+            logger.info("No action needed - just wait for the retention period to expire.")
+
         if total_failed > 0:
             logger.info(f"Failed to delete: {total_failed} resources")
             logger.info("\nFailed resource types:")
             for rtype, count in sorted(self.failed_count.items()):
                 logger.info(f"  - {rtype}: {count}")
+
+            # Suggest re-run if there are retriable failures
+            if total_retriable > 0:
+                logger.info(f"\n{total_retriable} failure(s) may succeed on retry (dependency conflicts, etc.)")
+                logger.info("Suggestion: Run the tool again in 2-3 minutes to retry these resources.")
 
         # Delete compartment if requested and no failures
         if self.delete_compartment:

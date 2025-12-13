@@ -371,6 +371,8 @@ def get_deletion_progress(compartment_id):
     # Add summary counts
     progress['deleted_count'] = sum(deleter.deleted_count.values())
     progress['failed_count'] = sum(deleter.failed_count.values())
+    progress['scheduled_count'] = sum(deleter.scheduled_count.values())
+    progress['retriable_count'] = sum(deleter.retriable_count.values())
 
     return jsonify(progress)
 
