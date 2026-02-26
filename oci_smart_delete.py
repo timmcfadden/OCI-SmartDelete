@@ -461,6 +461,15 @@ class OCISmartDelete:
                 )
                 client.schedule_vault_deletion(resource_id, schedule_details)
                 logger.info(f"Vault scheduled for deletion on {deletion_time.isoformat()}")
+            # Special handling for VaultSecret deletion (needs schedule_secret_deletion_details)
+            elif special_type == 'vault_secret':
+                from datetime import datetime, timedelta
+                deletion_time = datetime.utcnow() + timedelta(days=1)
+                schedule_details = oci.vault.models.ScheduleSecretDeletionDetails(
+                    time_of_deletion=deletion_time
+                )
+                client.schedule_secret_deletion(resource_id, schedule_details)
+                logger.info(f"Secret scheduled for deletion on {deletion_time.isoformat()}")
             # Special handling for Key deletion (needs vault's management endpoint)
             elif special_type == 'key':
                 # Keys require the management endpoint from their parent vault
@@ -704,7 +713,15 @@ class OCISmartDelete:
             'Snapshot': 64,               # File system snapshots before file systems
             'Export': 63,                 # Exports before file systems
             'FileSystem': 62,
-            'Vault': 61,                  # After Keys
+            'VaultSecret': 62,                # Secrets before Vault
+            'Vault': 61,                  # After Keys and Secrets
+            # Cloud Migration / Cloud Bridge resources
+            'OcbAwsEbsAsset': 75,         # Assets before sources/environments
+            'OcbAwsEcTwoAsset': 75,
+            'OcbAssetSource': 74,         # Sources before environments
+            'OcbEnvironment': 73,
+            'MigrationPlan': 72,          # Plans before migrations
+            'Migration': 71,
             # Then networking resources
             'LocalPeeringGateway': 55,
             'Drg': 52,
