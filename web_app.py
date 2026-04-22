@@ -202,7 +202,8 @@ def list_compartments():
         # Get all compartments
         def get_compartments_recursive(parent_id, level=0):
             try:
-                response = identity.list_compartments(
+                response = oci.pagination.list_call_get_all_results(
+                    identity.list_compartments,
                     parent_id,
                     compartment_id_in_subtree=True
                 )
