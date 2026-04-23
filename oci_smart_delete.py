@@ -273,11 +273,7 @@ class OCISmartDelete:
         Use OCI Search service to discover all resources in compartment
         Returns: dict mapping resource types to lists of resources
         """
-        logger.info(f"Discovering resources in compartment {self.compartment_id}...")
-
-        search_client = oci.resource_search.ResourceSearchClient(
-            self.config, signer=self.signer
-        )
+        logger.info(f"Discovering resources in compartment {self.compartment_id} across {len(self.regions)} region(s): {', '.join(self.regions)}")
 
         # Query for all resources in compartment that aren't already deleted
         query = f"""query all resources where
@@ -288,41 +284,54 @@ class OCISmartDelete:
                     lifecycleState != 'TERMINATING'"""
 
         resources_by_type = defaultdict(list)
+        seen_ids = set()
 
-        try:
-            # Handle pagination
-            page = None
-            while True:
-                search_details = oci.resource_search.models.StructuredSearchDetails(
-                    query=query,
-                    type='Structured',
-                    matching_context_type='NONE'
-                )
+        # Resource Search is region-scoped — query every subscribed region
+        for region in self.regions:
+            search_client = self._get_client('resource_search.ResourceSearchClient', region)
 
-                if page:
-                    response = search_client.search_resources(
-                        search_details,
-                        page=page,
-                        limit=1000
-                    )
-                else:
-                    response = search_client.search_resources(
-                        search_details,
-                        limit=1000
+            try:
+                page = None
+                while True:
+                    search_details = oci.resource_search.models.StructuredSearchDetails(
+                        query=query,
+                        type='Structured',
+                        matching_context_type='NONE'
                     )
 
-                for item in response.data.items:
-                    # Skip resource types that are auto-deleted with their parent
-                    if item.resource_type not in self.SKIP_RESOURCE_TYPES:
+                    if page:
+                        response = search_client.search_resources(
+                            search_details,
+                            page=page,
+                            limit=1000
+                        )
+                    else:
+                        response = search_client.search_resources(
+                            search_details,
+                            limit=1000
+                        )
+
+                    for item in response.data.items:
+                        if item.resource_type in self.SKIP_RESOURCE_TYPES:
+                            continue
+                        if item.identifier in seen_ids:
+                            continue
+                        seen_ids.add(item.identifier)
+                        # Tag with the region it was discovered in so deletion targets the right endpoint
+                        if not getattr(item, 'region', None):
+                            try:
+                                item.region = region
+                            except AttributeError:
+                                pass
                         resources_by_type[item.resource_type].append(item)
 
-                if not response.has_next_page:
-                    break
-                page = response.next_page
+                    if not response.has_next_page:
+                        break
+                    page = response.next_page
 
-        except Exception as e:
-            logger.error(f"Error discovering resources: {e}")
-            return {}
+            except Exception as e:
+                logger.error(f"Error discovering resources in {region}: {e}")
+                continue
 
         # Also discover non-searchable resources (not indexed by OCI Resource Search API)
         self._discover_non_searchable_resources(resources_by_type)
