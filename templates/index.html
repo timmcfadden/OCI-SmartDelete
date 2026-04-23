@@ -6,7 +6,305 @@
     <title>OCI Smart Delete</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
+        :root {
+            --font-sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+            --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, 'Menlo', monospace;
+        }
+        body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+        .font-mono-plex { font-family: var(--font-mono); }
+
+        /* ---------- Compartment picker ---------- */
+        .picker-wrap { position: relative; }
+        .picker-trigger {
+            border: 1px solid rgb(226 232 240);
+            background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%);
+            transition: border-color .15s ease, box-shadow .15s ease, transform .08s ease;
+        }
+        .picker-trigger:hover:not(:disabled) { border-color: rgb(148 163 184); }
+        .picker-trigger.is-open {
+            border-color: rgb(37 99 235);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+        }
+        .picker-trigger:disabled { opacity: 0.55; cursor: not-allowed; }
+        .target-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: rgb(100 116 139);
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .target-label::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            background: rgb(239 68 68);
+            border-radius: 50%;
+            box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+            animation: lock-pulse 2s ease-in-out infinite;
+        }
+        .target-label.is-empty::before {
+            background: rgb(148 163 184);
+            box-shadow: none;
+            animation: none;
+        }
+        @keyframes lock-pulse {
+            0%, 100% { box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18); }
+            50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.04); }
+        }
+        .picker-breadcrumb {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: rgb(71 85 105);
+            line-height: 1.4;
+        }
+        .picker-breadcrumb .sep {
+            color: rgb(203 213 225);
+            margin: 0 6px;
+            font-weight: 400;
+        }
+        .picker-breadcrumb .tip {
+            color: rgb(15 23 42);
+            font-weight: 600;
+        }
+        .ocid-chip {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: rgb(71 85 105);
+            background: rgb(241 245 249);
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid rgb(226 232 240);
+            white-space: nowrap;
+        }
+
+        /* Dropdown panel */
+        .picker-panel {
+            box-shadow:
+                0 24px 48px -16px rgba(15, 23, 42, 0.22),
+                0 8px 20px -8px rgba(15, 23, 42, 0.12),
+                0 0 0 1px rgba(148, 163, 184, 0.08);
+            border: 1px solid rgb(226 232 240);
+            background: white;
+            animation: picker-drop .14s ease-out;
+        }
+        @keyframes picker-drop {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .picker-search-wrap {
+            background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+            border-bottom: 1px solid rgb(226 232 240);
+        }
+        .picker-search {
+            font-family: var(--font-sans);
+            background: white;
+            transition: border-color .12s ease, box-shadow .12s ease;
+        }
+        .picker-search:focus {
+            outline: none;
+            border-color: rgb(37 99 235);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+        }
+
+        /* Row */
+        .picker-row {
+            display: flex;
+            align-items: center;
+            padding: 8px 12px 8px 8px;
+            cursor: pointer;
+            border-left: 2px solid transparent;
+            position: relative;
+            transition: background-color .06s linear;
+        }
+        .picker-row:hover { background-color: rgb(248 250 252); }
+        .picker-row.is-highlighted {
+            background-color: rgb(239 246 255);
+            border-left-color: rgb(37 99 235);
+        }
+        .picker-row.is-selected {
+            background-color: rgb(219 234 254);
+        }
+        .picker-row.is-selected.is-highlighted {
+            background-color: rgb(191 219 254);
+        }
+        .picker-row .rail {
+            width: 20px;
+            align-self: stretch;
+            position: relative;
+            flex-shrink: 0;
+        }
+        .picker-row .rail::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            left: 50%;
+            width: 1px;
+            background-image: linear-gradient(to bottom, rgb(203 213 225) 50%, transparent 50%);
+            background-size: 1px 4px;
+        }
+        .picker-caret {
+            width: 20px;
+            height: 20px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            color: rgb(100 116 139);
+            border-radius: 3px;
+        }
+        .picker-caret:hover { background: rgb(226 232 240); color: rgb(15 23 42); }
+        .picker-caret svg { width: 10px; height: 10px; transition: transform .12s ease; }
+        .picker-caret.is-open svg { transform: rotate(90deg); }
+        .level-badge {
+            font-family: var(--font-mono);
+            font-size: 9.5px;
+            font-weight: 500;
+            letter-spacing: 0.08em;
+            color: rgb(71 85 105);
+            background: rgb(241 245 249);
+            border: 1px solid rgb(226 232 240);
+            padding: 1px 5px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+        .level-badge.is-root {
+            color: white;
+            background: rgb(15 23 42);
+            border-color: rgb(15 23 42);
+        }
+        .level-badge.is-l1 {
+            color: rgb(30 58 138);
+            background: rgb(219 234 254);
+            border-color: rgb(191 219 254);
+        }
+        .picker-row-name {
+            font-family: var(--font-sans);
+            color: rgb(71 85 105);
+            font-weight: 400;
+            font-size: 14px;
+        }
+        .picker-row-name.is-top {
+            color: rgb(15 23 42);
+            font-weight: 600;
+            font-size: 15px;
+            letter-spacing: -0.005em;
+        }
+        .picker-row-name.is-root {
+            color: rgb(15 23 42);
+            font-weight: 700;
+            font-size: 15px;
+            letter-spacing: -0.01em;
+        }
+        .picker-row-name mark {
+            background: rgb(253 230 138);
+            color: rgb(15 23 42);
+            padding: 0 2px;
+            border-radius: 2px;
+            font-weight: 600;
+        }
+        .picker-row-path {
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+            color: rgb(148 163 184);
+            margin-top: 1px;
+            line-height: 1.3;
+        }
+        .picker-check {
+            width: 16px;
+            height: 16px;
+            color: rgb(37 99 235);
+            flex-shrink: 0;
+        }
+        .state-pill {
+            font-family: var(--font-mono);
+            font-size: 9.5px;
+            font-weight: 600;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            padding: 2px 6px;
+            border-radius: 3px;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+        .state-pill.is-deleting {
+            color: rgb(146 64 14);
+            background: rgb(254 243 199);
+            border: 1px solid rgb(252 211 77);
+        }
+        .state-pill.is-deleting::before {
+            content: '';
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: rgb(217 119 6);
+            animation: state-blink 1.4s ease-in-out infinite;
+        }
+        @keyframes state-blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+        .picker-row.is-deleting .picker-row-name { color: rgb(146 64 14); }
+
+        /* Footer */
+        .picker-footer {
+            background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+            border-top: 1px solid rgb(226 232 240);
+            padding: 8px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: rgb(100 116 139);
+        }
+        .kbd {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 500;
+            background: white;
+            border: 1px solid rgb(203 213 225);
+            border-bottom-width: 2px;
+            border-radius: 4px;
+            padding: 1px 5px;
+            color: rgb(51 65 85);
+            display: inline-block;
+            line-height: 1;
+            margin-right: 3px;
+        }
+        .picker-empty {
+            padding: 36px 20px;
+            text-align: center;
+            color: rgb(100 116 139);
+            font-size: 13px;
+        }
+
+        /* Refresh button styling to match */
+        .refresh-btn {
+            border: 1px solid rgb(226 232 240);
+            background: white;
+            color: rgb(51 65 85);
+            font-family: var(--font-sans);
+            font-weight: 500;
+            letter-spacing: -0.005em;
+            transition: border-color .12s ease, background .12s ease;
+        }
+        .refresh-btn:hover:not(:disabled) {
+            border-color: rgb(148 163 184);
+            background: rgb(248 250 252);
+        }
+        .refresh-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
         [x-cloak] { display: none !important; }
         .resource-deleted {
             text-decoration: line-through;
@@ -124,21 +422,159 @@
             </div>
 
             <!-- Compartment Selection (shown when not loading) -->
-            <div x-show="!loadingCompartments" class="flex gap-3">
-                <select
-                    x-model="selectedCompartment"
-                    class="flex-1 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                    :disabled="isDeleting">
-                    <option value="">Choose a compartment...</option>
-                    <template x-for="comp in compartments" :key="comp.id">
-                        <option :value="comp.id" x-text="comp.name"></option>
-                    </template>
-                </select>
+            <div x-show="!loadingCompartments" class="flex gap-3 items-stretch">
+                <!-- Custom picker -->
+                <div class="picker-wrap flex-1" @keydown.escape.window="pickerOpen && (pickerOpen = false)">
+                    <!-- Trigger / target-bar -->
+                    <button
+                        type="button"
+                        @click="togglePicker()"
+                        :disabled="isDeleting"
+                        class="picker-trigger w-full rounded-lg px-4 py-3 text-left focus:outline-none"
+                        :class="{ 'is-open': pickerOpen }">
+                        <template x-if="selectedCompartmentObj">
+                            <div class="flex items-start justify-between gap-3">
+                                <div class="min-w-0 flex-1">
+                                    <div class="target-label">
+                                        <span x-text="selectedCompartmentObj.is_root ? 'Tenancy Root' : 'Target Compartment'"></span>
+                                    </div>
+                                    <div class="mt-1.5 flex items-center gap-2 min-w-0">
+                                        <span class="text-[17px] font-semibold text-slate-900 truncate tracking-tight" x-text="selectedCompartmentObj.name"></span>
+                                        <span x-show="selectedCompartmentObj.state === 'DELETING'" class="state-pill is-deleting" title="This compartment is being deleted">Deleting</span>
+                                    </div>
+                                    <div class="picker-breadcrumb truncate mt-1">
+                                        <template x-for="(seg, i) in selectedCompartmentObj.path" :key="i">
+                                            <span>
+                                                <span x-show="i > 0" class="sep">›</span>
+                                                <span x-text="seg" :class="{ 'tip': i === selectedCompartmentObj.path.length - 1 }"></span>
+                                            </span>
+                                        </template>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2 shrink-0 pt-1">
+                                    <span class="ocid-chip" x-text="'…' + selectedCompartmentObj.id.slice(-12)" :title="selectedCompartmentObj.id"></span>
+                                    <svg class="w-4 h-4 text-slate-400 transition-transform" :class="{ 'rotate-180': pickerOpen }" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                                </div>
+                            </div>
+                        </template>
+                        <template x-if="!selectedCompartmentObj">
+                            <div class="flex items-center justify-between gap-3">
+                                <div class="min-w-0 flex-1">
+                                    <div class="target-label is-empty">
+                                        <span>No Target Selected</span>
+                                    </div>
+                                    <div class="mt-1.5 text-[15px] text-slate-500">Choose a compartment to inspect…</div>
+                                </div>
+                                <svg class="w-4 h-4 text-slate-400 transition-transform" :class="{ 'rotate-180': pickerOpen }" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.17l3.71-3.94a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z" clip-rule="evenodd"/></svg>
+                            </div>
+                        </template>
+                    </button>
+
+                    <!-- Dropdown panel -->
+                    <div
+                        x-show="pickerOpen"
+                        x-cloak
+                        @click.outside="pickerOpen = false"
+                        class="picker-panel absolute z-30 mt-2 w-full rounded-lg overflow-hidden">
+                        <!-- Search -->
+                        <div class="picker-search-wrap px-3 py-3">
+                            <div class="relative">
+                                <svg class="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clip-rule="evenodd"/></svg>
+                                <input
+                                    type="text"
+                                    x-ref="pickerSearch"
+                                    x-model="pickerQuery"
+                                    @keydown.arrow-down.prevent="movePickerHighlight(1)"
+                                    @keydown.arrow-up.prevent="movePickerHighlight(-1)"
+                                    @keydown.enter.prevent="commitPickerHighlight()"
+                                    @keydown.escape.prevent="pickerOpen = false"
+                                    placeholder="Search name or path…"
+                                    class="picker-search w-full pl-9 pr-24 py-2 border border-slate-200 rounded-md text-sm text-slate-900 placeholder:text-slate-400">
+                                <div class="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-mono-plex text-slate-400 pointer-events-none">
+                                    <span x-text="visibleCompartments.length"></span><span class="text-slate-300"> / </span><span x-text="compartments.length"></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Results -->
+                        <div class="overflow-y-auto" style="max-height: 24rem;" x-ref="pickerList">
+                            <template x-for="(comp, idx) in visibleCompartments" :key="comp.id">
+                                <div
+                                    class="picker-row"
+                                    :class="{
+                                        'is-highlighted': pickerHighlight === idx,
+                                        'is-selected': selectedCompartment === comp.id,
+                                        'is-deleting': comp.state === 'DELETING'
+                                    }"
+                                    @mouseenter="pickerHighlight = idx"
+                                    @click="commitPicker(comp.id)">
+                                    <!-- Indent rails -->
+                                    <template x-for="n in comp.level" :key="n">
+                                        <span class="rail"></span>
+                                    </template>
+                                    <!-- Collapse caret (or spacer) -->
+                                    <template x-if="comp.has_children">
+                                        <button
+                                            type="button"
+                                            class="picker-caret"
+                                            :class="{ 'is-open': !collapsedIds.includes(comp.id) }"
+                                            @click.stop="toggleCollapse(comp.id)"
+                                            :aria-label="collapsedIds.includes(comp.id) ? 'Expand' : 'Collapse'">
+                                            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/></svg>
+                                        </button>
+                                    </template>
+                                    <span x-show="!comp.has_children" class="picker-caret" aria-hidden="true"></span>
+                                    <!-- Level badge -->
+                                    <span class="level-badge mx-2"
+                                          :class="{ 'is-root': comp.is_root, 'is-l1': comp.level === 1 }"
+                                          x-text="comp.is_root ? 'ROOT' : 'L' + comp.level"></span>
+                                    <!-- Name + path -->
+                                    <div class="flex-1 min-w-0">
+                                        <div class="picker-row-name truncate"
+                                             :class="{ 'is-root': comp.is_root, 'is-top': comp.level === 1 }">
+                                            <span x-html="highlightMatch(comp.name)"></span>
+                                        </div>
+                                        <div class="picker-row-path truncate"
+                                             x-show="!comp.is_root && (pickerQuery || comp.level > 1)">
+                                            <span x-html="highlightMatch(comp.path.slice(0, -1).join(' / '))"></span>
+                                        </div>
+                                    </div>
+                                    <!-- State pill -->
+                                    <span x-show="comp.state === 'DELETING'" class="state-pill is-deleting ml-2" title="This compartment is being deleted">Deleting</span>
+                                    <!-- Selected check -->
+                                    <svg x-show="selectedCompartment === comp.id" class="picker-check ml-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 01.143 1.052l-8 10.5a.75.75 0 01-1.127.075l-4.5-4.5a.75.75 0 011.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 011.05-.143z" clip-rule="evenodd"/></svg>
+                                </div>
+                            </template>
+                            <!-- Empty -->
+                            <div x-show="visibleCompartments.length === 0" class="picker-empty">
+                                <div class="text-2xl mb-2">∅</div>
+                                No compartments match
+                                <span class="font-mono-plex text-slate-700 bg-slate-100 rounded px-1.5 py-0.5 ml-1" x-text="'“' + pickerQuery + '”'"></span>
+                            </div>
+                        </div>
+
+                        <!-- Footer -->
+                        <div class="picker-footer">
+                            <div class="flex items-center gap-3">
+                                <span><kbd class="kbd">↑↓</kbd>navigate</span>
+                                <span><kbd class="kbd">↵</kbd>select</span>
+                                <span><kbd class="kbd">esc</kbd>close</span>
+                            </div>
+                            <div>
+                                <span x-text="compartments.length"></span> compartment<span x-show="compartments.length !== 1">s</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Refresh -->
                 <button
                     @click="loadCompartments()"
-                    class="px-6 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 disabled:opacity-50"
-                    :disabled="isDeleting">
-                    🔄 Refresh
+                    class="refresh-btn px-5 rounded-lg flex items-center gap-2 shrink-0"
+                    :disabled="isDeleting"
+                    title="Reload compartment list">
+                    <svg class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clip-rule="evenodd"/></svg>
+                    <span>Refresh</span>
                 </button>
             </div>
         </div>
@@ -240,22 +676,191 @@
                 </div>
             </div>
 
+            <!-- Subcompartments (always shown when present) -->
+            <div x-show="subcompartmentsList.length > 0" x-cloak class="mt-8">
+                <div class="flex items-end justify-between mb-3 gap-4 flex-wrap">
+                    <div>
+                        <h3 class="text-lg font-semibold text-slate-900">Child Compartments</h3>
+                        <p class="text-sm text-slate-600">
+                            Check any subcompartments you also want to clean up and delete. Expand a row to preview what's inside.
+                        </p>
+                    </div>
+                    <div class="flex items-center gap-2 text-xs font-mono-plex">
+                        <button @click="selectAllSubcompartments()" class="text-blue-700 hover:text-blue-900 underline underline-offset-2">Select all</button>
+                        <span class="text-slate-300">|</span>
+                        <button @click="clearSubcompartmentSelection()" class="text-slate-600 hover:text-slate-900 underline underline-offset-2">Clear</button>
+                    </div>
+                </div>
+
+                <!-- Selection summary -->
+                <div class="mb-3 px-4 py-2 rounded-md border text-sm flex items-center justify-between"
+                     :class="selectedSubcompartmentIds.length > 0 ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-slate-50 border-slate-200 text-slate-600'">
+                    <div>
+                        <span class="font-semibold" x-text="selectedSubcompartmentIds.length"></span>
+                        of
+                        <span x-text="subcompartmentsList.length"></span>
+                        subcompartment<span x-show="subcompartmentsList.length !== 1">s</span> selected for deletion
+                    </div>
+                    <div x-show="selectedSubcompartmentIds.length > 0" class="font-mono-plex text-xs">
+                        <span x-text="selectedSubcompartmentsTotalResources"></span> resource<span x-show="selectedSubcompartmentsTotalResources !== 1">s</span> previewed
+                    </div>
+                </div>
+
+                <div class="space-y-2">
+                    <template x-for="sc in subcompartmentsList" :key="sc.id">
+                        <div class="border rounded-lg overflow-hidden transition-colors"
+                             :class="selectedSubcompartmentIds.includes(sc.id) ? 'border-amber-300 bg-amber-50/30' : 'border-slate-200 bg-white'">
+                            <div class="px-4 py-3 flex items-center justify-between gap-3"
+                                 :class="selectedSubcompartmentIds.includes(sc.id) ? 'bg-amber-50' : 'bg-slate-50 hover:bg-slate-100'">
+                                <!-- Checkbox + name + caret -->
+                                <div class="flex items-center gap-3 min-w-0 flex-1">
+                                    <label class="flex items-center cursor-pointer" @click.stop>
+                                        <input type="checkbox"
+                                               class="w-4 h-4 rounded border-slate-300 text-amber-600 focus:ring-amber-400"
+                                               :checked="selectedSubcompartmentIds.includes(sc.id)"
+                                               :disabled="sc.state !== 'ACTIVE'"
+                                               @change="toggleSubcompartmentSelection(sc.id)">
+                                    </label>
+                                    <button type="button" class="flex items-center gap-3 min-w-0 flex-1 text-left"
+                                            @click="toggleSubcompartment(sc.id)">
+                                        <svg class="w-3 h-3 text-slate-500 transition-transform flex-shrink-0"
+                                             :class="{ 'rotate-90': expandedSubcompartments.includes(sc.id) }"
+                                             viewBox="0 0 20 20" fill="currentColor">
+                                            <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                                        </svg>
+                                        <span class="level-badge is-l1">L1</span>
+                                        <span class="font-semibold text-slate-900 truncate" x-text="sc.name"></span>
+                                        <span x-show="sc.state === 'DELETING'" class="state-pill is-deleting" title="Already being deleted">Deleting</span>
+                                    </button>
+                                </div>
+                                <!-- Counts / status -->
+                                <div class="flex items-center gap-2 flex-shrink-0">
+                                    <template x-if="subcompartmentsResources[sc.id] && subcompartmentsResources[sc.id].loading">
+                                        <span class="flex items-center gap-2 text-xs font-mono-plex text-slate-500">
+                                            <span class="spinner-circle" style="width: 12px; height: 12px; border-width: 2px;"></span>
+                                            discovering…
+                                        </span>
+                                    </template>
+                                    <template x-if="subcompartmentsResources[sc.id] && !subcompartmentsResources[sc.id].loading && !subcompartmentsResources[sc.id].error">
+                                        <span class="font-mono-plex text-sm">
+                                            <template x-if="subcompartmentsResources[sc.id].total_count > 0">
+                                                <span class="text-slate-700">
+                                                    <span x-text="subcompartmentsResources[sc.id].total_count"></span>
+                                                    <span class="text-slate-400"> resource<span x-show="subcompartmentsResources[sc.id].total_count !== 1">s</span></span>
+                                                    <span class="text-slate-300"> · </span>
+                                                    <span x-text="subcompartmentsResources[sc.id].type_count"></span>
+                                                    <span class="text-slate-400"> type<span x-show="subcompartmentsResources[sc.id].type_count !== 1">s</span></span>
+                                                </span>
+                                            </template>
+                                            <template x-if="subcompartmentsResources[sc.id].total_count === 0">
+                                                <span class="text-xs text-green-700 bg-green-50 border border-green-200 rounded px-2 py-0.5">empty</span>
+                                            </template>
+                                        </span>
+                                    </template>
+                                    <template x-if="subcompartmentsResources[sc.id] && subcompartmentsResources[sc.id].error">
+                                        <span class="state-pill is-deleting" title="Discovery error">Error</span>
+                                    </template>
+                                    <template x-if="!subcompartmentsResources[sc.id]">
+                                        <button type="button"
+                                                class="text-xs font-mono-plex text-blue-700 hover:text-blue-900 underline underline-offset-2"
+                                                @click.stop="discoverSubcompartment(sc.id); if(!expandedSubcompartments.includes(sc.id)) expandedSubcompartments.push(sc.id);">
+                                            Discover →
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
+
+                            <div x-show="expandedSubcompartments.includes(sc.id)" x-cloak class="p-4 bg-white border-t border-slate-200">
+                                <template x-if="!subcompartmentsResources[sc.id] || subcompartmentsResources[sc.id].loading">
+                                    <div class="flex items-center gap-3 text-sm text-slate-500">
+                                        <div class="spinner-circle" style="width: 16px; height: 16px;"></div>
+                                        Discovering resources…
+                                    </div>
+                                </template>
+                                <template x-if="subcompartmentsResources[sc.id] && !subcompartmentsResources[sc.id].loading && subcompartmentsResources[sc.id].error">
+                                    <div class="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3" x-text="subcompartmentsResources[sc.id].error"></div>
+                                </template>
+                                <template x-if="subcompartmentsResources[sc.id] && !subcompartmentsResources[sc.id].loading && !subcompartmentsResources[sc.id].error && subcompartmentsResources[sc.id].total_count === 0">
+                                    <div class="text-sm text-slate-500 italic">No resources found in this subcompartment.</div>
+                                </template>
+                                <template x-if="subcompartmentsResources[sc.id] && !subcompartmentsResources[sc.id].loading && !subcompartmentsResources[sc.id].error && subcompartmentsResources[sc.id].total_count > 0">
+                                    <div class="space-y-2">
+                                        <template x-for="resource in subcompartmentsResources[sc.id].resources" :key="sc.id + ':' + resource.type">
+                                            <div class="border border-slate-200 rounded">
+                                                <div class="bg-slate-50/70 px-3 py-2 flex items-center justify-between cursor-pointer hover:bg-slate-100"
+                                                     @click="toggleSubcompartmentType(sc.id, resource.type)">
+                                                    <div class="flex items-center gap-2">
+                                                        <svg class="w-3 h-3 text-slate-400 transition-transform"
+                                                             :class="{ 'rotate-90': isSubTypeExpanded(sc.id, resource.type) }"
+                                                             viewBox="0 0 20 20" fill="currentColor">
+                                                            <path fill-rule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clip-rule="evenodd"/>
+                                                        </svg>
+                                                        <span class="font-semibold text-slate-800 text-sm" x-text="resource.type"></span>
+                                                        <span class="text-slate-500 text-xs">(<span x-text="resource.count"></span>)</span>
+                                                    </div>
+                                                </div>
+                                                <div x-show="isSubTypeExpanded(sc.id, resource.type)" x-cloak class="px-3 py-2 bg-white">
+                                                    <table class="w-full text-xs">
+                                                        <thead>
+                                                            <tr class="border-b text-slate-500">
+                                                                <th class="text-left py-1 font-medium">Name</th>
+                                                                <th class="text-left py-1 font-medium">State</th>
+                                                                <th class="text-left py-1 font-medium">Region</th>
+                                                                <th class="text-center py-1 font-medium">Status</th>
+                                                            </tr>
+                                                        </thead>
+                                                        <tbody>
+                                                            <template x-for="item in resource.items" :key="item.id">
+                                                                <tr class="border-b last:border-b-0"
+                                                                    :class="{
+                                                                        'resource-deleted': getResourceStatus(item.id) === 'deleted',
+                                                                        'resource-deleting': getResourceStatus(item.id) === 'deleting',
+                                                                        'resource-scheduled': getResourceStatus(item.id) === 'scheduled',
+                                                                        'resource-failed': getResourceStatus(item.id) === 'failed'
+                                                                    }">
+                                                                    <td class="py-1 text-slate-800" x-text="item.name"></td>
+                                                                    <td class="py-1"><span class="px-1.5 py-0.5 text-[10px] rounded bg-slate-100" x-text="item.state"></span></td>
+                                                                    <td class="py-1 font-mono-plex text-[11px] text-slate-600" x-text="item.region"></td>
+                                                                    <td class="py-1 text-center">
+                                                                        <span x-show="getResourceStatus(item.id) === 'pending'" class="text-slate-400">⏳</span>
+                                                                        <span x-show="getResourceStatus(item.id) === 'deleting'" class="text-blue-600">…</span>
+                                                                        <span x-show="getResourceStatus(item.id) === 'deleted'" class="text-green-600">✓</span>
+                                                                        <span x-show="getResourceStatus(item.id) === 'scheduled'" class="text-yellow-600">⏱</span>
+                                                                        <span x-show="getResourceStatus(item.id) === 'failed'" class="text-red-600">✗</span>
+                                                                    </td>
+                                                                </tr>
+                                                            </template>
+                                                        </tbody>
+                                                    </table>
+                                                </div>
+                                            </div>
+                                        </template>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
             <!-- Empty Compartment Message -->
-            <div x-show="resources.length === 0 && discoveryTime" x-cloak class="mt-6">
+            <div x-show="resources.length === 0 && subcompartmentsList.length === 0 && discoveryTime" x-cloak class="mt-6">
                 <div class="bg-green-50 border-l-4 border-green-400 p-4">
                     <div class="flex items-center">
                         <div class="text-2xl mr-3">✅</div>
                         <div>
                             <p class="font-semibold text-green-800">Compartment is empty!</p>
-                            <p class="text-sm text-green-700 mt-1">No resources found. Discovery completed in <span x-text="discoveryTime"></span></p>
+                            <p class="text-sm text-green-700 mt-1">
+                                No resources and no subcompartments. Discovery completed in <span x-text="discoveryTime"></span>.
+                            </p>
                         </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Step 3: Delete Resources (when resources exist) -->
-        <div class="bg-white rounded-lg shadow-md p-6 mb-6" x-show="resources.length > 0" x-cloak>
+        <!-- Step 3: Delete Resources (when parent has resources, or user selected subcompartments) -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6" x-show="resources.length > 0 || selectedSubcompartmentIds.length > 0" x-cloak>
             <div class="flex items-center mb-4">
                 <div class="bg-blue-600 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold mr-3">3</div>
                 <h2 class="text-xl font-semibold">Delete Resources</h2>
@@ -272,10 +877,23 @@
                 </div>
             </div>
 
+            <!-- Selection summary -->
+            <div x-show="selectedSubcompartmentIds.length > 0" x-cloak class="mb-4 p-3 rounded-md bg-amber-50 border border-amber-200 text-sm text-amber-900">
+                <div class="flex items-start gap-2">
+                    <span class="text-lg leading-none">⚠</span>
+                    <div>
+                        <span class="font-semibold" x-text="selectedSubcompartmentIds.length"></span>
+                        subcompartment<span x-show="selectedSubcompartmentIds.length !== 1">s</span> selected.
+                        Their resources will be deleted and the subcompartments themselves removed
+                        <span class="font-mono-plex text-xs">(grandchildren are skipped — 1 level deep)</span>.
+                    </div>
+                </div>
+            </div>
+
             <div class="mb-4">
                 <label class="flex items-center cursor-pointer">
                     <input type="checkbox" x-model="deleteCompartmentToo" class="mr-2 w-4 h-4" :disabled="isDeleting">
-                    <span class="text-gray-700">Also delete the compartment after resources are removed</span>
+                    <span class="text-gray-700">Also delete the target compartment after its resources are removed</span>
                 </label>
             </div>
 
@@ -298,6 +916,40 @@
                         <span x-show="scheduledCount > 0" class="text-yellow-600"><span x-text="scheduledCount"></span> scheduled for deletion</span>
                         <span><span x-text="failedCount"></span> failed</span>
                         <span><span x-text="deletionProgress"></span>% complete</span>
+                    </div>
+
+                    <!-- Subcompartment progress (only when flag was set) -->
+                    <div x-show="subcompartmentsProgress.length > 0" x-cloak class="mt-4 pt-3 border-t border-blue-200">
+                        <div class="text-xs font-mono-plex uppercase tracking-wider text-slate-600 mb-2">
+                            Subcompartments
+                            <span class="text-slate-400">·</span>
+                            <span x-text="subcompartmentsProgress.filter(s => s.status === 'complete').length"></span>
+                            <span class="text-slate-400">/</span>
+                            <span x-text="subcompartmentsProgress.length"></span>
+                        </div>
+                        <div class="space-y-1 max-h-48 overflow-y-auto">
+                            <template x-for="sc in subcompartmentsProgress" :key="sc.id">
+                                <div class="flex items-center justify-between text-sm py-1 px-2 rounded"
+                                     :class="{
+                                         'bg-slate-50': sc.status === 'pending',
+                                         'bg-blue-100': sc.status === 'processing',
+                                         'bg-green-50': sc.status === 'complete',
+                                         'bg-red-50': sc.status === 'failed'
+                                     }">
+                                    <div class="flex items-center gap-2 min-w-0">
+                                        <span x-show="sc.status === 'pending'" class="text-slate-400">○</span>
+                                        <span x-show="sc.status === 'processing'" class="spinner-circle" style="width: 12px; height: 12px; border-width: 2px;"></span>
+                                        <span x-show="sc.status === 'complete'" class="text-green-600">✓</span>
+                                        <span x-show="sc.status === 'failed'" class="text-red-600">✗</span>
+                                        <span class="font-medium text-slate-800 truncate" x-text="sc.name"></span>
+                                    </div>
+                                    <div class="font-mono-plex text-xs text-slate-500 ml-2 flex-shrink-0">
+                                        <span x-text="sc.deleted"></span><span class="text-slate-300">/</span><span x-text="sc.total"></span>
+                                        <span x-show="sc.failed > 0" class="text-red-600 ml-1">(<span x-text="sc.failed"></span> failed)</span>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -402,11 +1054,24 @@
                 compartments: [],
                 selectedCompartment: '',
                 tenancyName: '',
+
+                // Compartment picker state
+                pickerOpen: false,
+                pickerQuery: '',
+                pickerHighlight: 0,
+                collapsedIds: [],
+
                 resources: [],
                 totalResources: 0,
                 discoveryTime: '',
                 expandedTypes: [],
                 deleteCompartmentToo: false,
+                subcompartmentsProgress: [],
+                subcompartmentsList: [],        // [{id, name, state, description}]
+                subcompartmentsResources: {},   // { [scId]: { loading, error, total_count, type_count, resources } }
+                selectedSubcompartmentIds: [],  // IDs the user has checked for deletion
+                expandedSubcompartments: [],
+                expandedSubcompartmentTypes: {},  // { "<scId>:<type>": true }
 
                 // Loading states
                 loadingCompartments: false,
@@ -428,6 +1093,118 @@
                 // Initialization
                 init() {
                     this.loadCompartments();
+                    // Reset highlight when search query changes
+                    this.$watch('pickerQuery', () => {
+                        this.pickerHighlight = 0;
+                        this.$nextTick(() => this.scrollHighlightIntoView());
+                    });
+                },
+
+                // --------- Compartment picker ---------
+                get selectedCompartmentObj() {
+                    if (!this.selectedCompartment) return null;
+                    return this.compartments.find(c => c.id === this.selectedCompartment) || null;
+                },
+
+                get visibleCompartments() {
+                    const q = this.pickerQuery.trim().toLowerCase();
+                    const hasQuery = q.length > 0;
+
+                    if (hasQuery) {
+                        // When searching, ignore collapse state; match name OR path
+                        return this.compartments.filter(c => {
+                            const name = (c.name || '').toLowerCase();
+                            const path = (c.path || []).join(' / ').toLowerCase();
+                            return name.includes(q) || path.includes(q);
+                        });
+                    }
+
+                    // Hide descendants of collapsed ancestors
+                    const collapsedSet = new Set(this.collapsedIds);
+                    const hiddenSubtree = new Set();
+                    const result = [];
+                    for (const c of this.compartments) {
+                        if (c.parent_id && hiddenSubtree.has(c.parent_id)) {
+                            hiddenSubtree.add(c.id);
+                            continue;
+                        }
+                        result.push(c);
+                        if (collapsedSet.has(c.id)) hiddenSubtree.add(c.id);
+                    }
+                    return result;
+                },
+
+                togglePicker() {
+                    if (this.isDeleting) return;
+                    this.pickerOpen = !this.pickerOpen;
+                    if (this.pickerOpen) {
+                        this.pickerQuery = '';
+                        const idx = this.visibleCompartments.findIndex(c => c.id === this.selectedCompartment);
+                        this.pickerHighlight = idx >= 0 ? idx : 0;
+                        this.$nextTick(() => {
+                            this.$refs.pickerSearch && this.$refs.pickerSearch.focus();
+                            this.scrollHighlightIntoView();
+                        });
+                    }
+                },
+
+                movePickerHighlight(delta) {
+                    const n = this.visibleCompartments.length;
+                    if (n === 0) return;
+                    this.pickerHighlight = (this.pickerHighlight + delta + n) % n;
+                    this.$nextTick(() => this.scrollHighlightIntoView());
+                },
+
+                commitPickerHighlight() {
+                    const c = this.visibleCompartments[this.pickerHighlight];
+                    if (c) this.commitPicker(c.id);
+                },
+
+                commitPicker(id) {
+                    this.selectedCompartment = id;
+                    this.pickerOpen = false;
+                    this.pickerQuery = '';
+                },
+
+                toggleCollapse(id) {
+                    const idx = this.collapsedIds.indexOf(id);
+                    if (idx >= 0) this.collapsedIds.splice(idx, 1);
+                    else this.collapsedIds.push(id);
+                    // Keep highlight in-bounds after the list shrinks/grows
+                    const max = this.visibleCompartments.length - 1;
+                    if (this.pickerHighlight > max) this.pickerHighlight = Math.max(0, max);
+                },
+
+                scrollHighlightIntoView() {
+                    const list = this.$refs.pickerList;
+                    if (!list) return;
+                    const el = list.children[this.pickerHighlight];
+                    if (!el) return;
+                    const listRect = list.getBoundingClientRect();
+                    const elRect = el.getBoundingClientRect();
+                    if (elRect.top < listRect.top) {
+                        list.scrollTop -= (listRect.top - elRect.top);
+                    } else if (elRect.bottom > listRect.bottom) {
+                        list.scrollTop += (elRect.bottom - listRect.bottom);
+                    }
+                },
+
+                highlightMatch(text) {
+                    const escaped = this.escapeHtml(text || '');
+                    const q = this.pickerQuery.trim();
+                    if (!q) return escaped;
+                    const re = new RegExp('(' + this.escapeRegExp(q) + ')', 'ig');
+                    return escaped.replace(re, '<mark>$1</mark>');
+                },
+
+                escapeHtml(s) {
+                    return String(s).replace(/[&<>"']/g, ch => ({
+                        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+                    }[ch]));
+                },
+
+                escapeRegExp(s) {
+                    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                 },
 
                 async loadCompartments() {
@@ -437,6 +1214,10 @@
                         const data = await response.json();
                         this.compartments = data.compartments;
                         this.tenancyName = data.tenancy_name;
+                        // Collapse every branch by default so the initial view shows only top-level
+                        this.collapsedIds = data.compartments
+                            .filter(c => c.has_children && !c.is_root)
+                            .map(c => c.id);
                     } catch (error) {
                         alert('Error loading compartments: ' + error.message);
                     } finally {
@@ -448,6 +1229,11 @@
                     this.discovering = true;
                     this.resources = [];
                     this.resourcesStatus = {};
+                    this.subcompartmentsList = [];
+                    this.subcompartmentsResources = {};
+                    this.selectedSubcompartmentIds = [];
+                    this.expandedSubcompartments = [];
+                    this.expandedSubcompartmentTypes = {};
                     this.deletionComplete = false;
 
                     const startTime = Date.now();
@@ -456,17 +1242,20 @@
                         const response = await fetch('/api/discover', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
-                            body: JSON.stringify({compartment_id: this.selectedCompartment})
+                            body: JSON.stringify({
+                                compartment_id: this.selectedCompartment
+                            })
                         });
 
                         const data = await response.json();
                         this.resources = data.resources;
                         this.totalResources = data.total_count;
+                        this.subcompartmentsList = data.subcompartments || [];
 
                         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                         this.discoveryTime = elapsed + 's';
 
-                        // Initialize all resources as pending
+                        // Initialize parent resources as pending
                         this.resources.forEach(resource => {
                             resource.items.forEach(item => {
                                 this.resourcesStatus[item.id] = {status: 'pending', error: null};
@@ -499,7 +1288,8 @@
                             headers: {'Content-Type': 'application/json'},
                             body: JSON.stringify({
                                 compartment_id: this.selectedCompartment,
-                                delete_compartment: this.deleteCompartmentToo
+                                delete_compartment: this.deleteCompartmentToo,
+                                subcompartment_ids: this.selectedSubcompartmentIds
                             })
                         });
 
@@ -570,6 +1360,7 @@
                             this.failedCount = progress.failed || 0;
                             this.scheduledCount = progress.scheduled || 0;
                             this.retriableCount = progress.retriable || 0;
+                            this.subcompartmentsProgress = progress.subcompartments || [];
 
                             // Calculate progress percentage
                             if (progress.total_resources > 0) {
@@ -606,6 +1397,83 @@
                     } else {
                         this.expandedTypes.splice(index, 1);
                     }
+                },
+
+                async toggleSubcompartment(scId) {
+                    const i = this.expandedSubcompartments.indexOf(scId);
+                    if (i === -1) {
+                        this.expandedSubcompartments.push(scId);
+                        // Auto-discover on first expand if we haven't already
+                        if (!this.subcompartmentsResources[scId]) {
+                            await this.discoverSubcompartment(scId);
+                        }
+                    } else {
+                        this.expandedSubcompartments.splice(i, 1);
+                    }
+                },
+
+                async discoverSubcompartment(scId) {
+                    // Cache entry with loading flag
+                    this.subcompartmentsResources[scId] = { loading: true, error: null, resources: [], total_count: 0, type_count: 0 };
+                    try {
+                        const response = await fetch('/api/discover', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({ compartment_id: scId })
+                        });
+                        const data = await response.json();
+                        const entry = {
+                            loading: false,
+                            error: data.error || null,
+                            resources: data.resources || [],
+                            total_count: data.total_count || 0,
+                            type_count: data.type_count || 0
+                        };
+                        this.subcompartmentsResources[scId] = entry;
+                        // Mark resources as pending so deletion status can update them later
+                        entry.resources.forEach(r => r.items.forEach(item => {
+                            this.resourcesStatus[item.id] = { status: 'pending', error: null };
+                        }));
+                    } catch (error) {
+                        this.subcompartmentsResources[scId] = { loading: false, error: error.message, resources: [], total_count: 0, type_count: 0 };
+                    }
+                },
+
+                toggleSubcompartmentType(scId, type) {
+                    const key = scId + ':' + type;
+                    this.expandedSubcompartmentTypes[key] = !this.expandedSubcompartmentTypes[key];
+                },
+
+                isSubTypeExpanded(scId, type) {
+                    return !!this.expandedSubcompartmentTypes[scId + ':' + type];
+                },
+
+                toggleSubcompartmentSelection(scId) {
+                    const i = this.selectedSubcompartmentIds.indexOf(scId);
+                    if (i === -1) this.selectedSubcompartmentIds.push(scId);
+                    else this.selectedSubcompartmentIds.splice(i, 1);
+                },
+
+                selectAllSubcompartments() {
+                    this.selectedSubcompartmentIds = this.subcompartmentsList
+                        .filter(sc => sc.state === 'ACTIVE')
+                        .map(sc => sc.id);
+                },
+
+                clearSubcompartmentSelection() {
+                    this.selectedSubcompartmentIds = [];
+                },
+
+                subcompartmentResourceCount(scId) {
+                    const entry = this.subcompartmentsResources[scId];
+                    return entry && !entry.loading ? entry.total_count : null;
+                },
+
+                get selectedSubcompartmentsTotalResources() {
+                    return this.selectedSubcompartmentIds.reduce((acc, id) => {
+                        const entry = this.subcompartmentsResources[id];
+                        return acc + (entry && !entry.loading ? entry.total_count : 0);
+                    }, 0);
                 },
 
                 getResourceStatus(resourceId) {

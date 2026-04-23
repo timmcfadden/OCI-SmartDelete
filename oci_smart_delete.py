@@ -20,6 +20,8 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import importlib
+import re
+from datetime import datetime, timezone
 
 # Import comprehensive resource type mappings
 try:
@@ -213,13 +215,68 @@ class OCISmartDelete:
         },
     }
 
-    def __init__(self, config, signer, compartment_id, regions=None, force=False, max_retries=3, delete_compartment=False):
+    # Error-message substrings that indicate a pre-requisite must be resolved before
+    # deletion can succeed. Retrying is useless — surface the hint to the user instead.
+    NON_RETRIABLE_ERROR_PATTERNS = [
+        ('Database Management is not disabled',
+         'Disable Database Management on the PDB/DB first (Database service → your DB → "Disable Database Management").'),
+        ("feature that's not currently enabled for this tenancy",
+         'Required tenancy feature is not enabled. If this is a DbSystem-attached Database, delete the parent DbSystem instead — child DBs/PDBs cascade with it.'),
+        ("feature that is not currently enabled for this tenancy",
+         'Required tenancy feature is not enabled. If this is a DbSystem-attached Database, delete the parent DbSystem instead.'),
+        ('Operations Insights is enabled',
+         'Disable Operations Insights on the underlying database first.'),
+        ('must be disabled before',
+         'A dependent feature must be disabled first — see the message for which one.'),
+        ('protected cluster',
+         'Delete the protection policy on the cluster first, or remove protection in the console.'),
+    ]
+
+    @staticmethod
+    def _classify_error(error_msg):
+        """
+        Inspect an error message and classify how the retry loop should handle it.
+        Returns one of:
+            ('non_retriable', hint_str) — a pre-req must be resolved; do not retry.
+            ('circuit_open', seconds)   — OCI circuit breaker is open; wait before retrying.
+            (None, None)                — normal retriable error.
+        """
+        text = str(error_msg) if error_msg is not None else ''
+        for pattern, hint in OCISmartDelete.NON_RETRIABLE_ERROR_PATTERNS:
+            if pattern in text:
+                return ('non_retriable', hint)
+        # e.g.: Circuit "uuid" OPEN until 2026-04-23 17:35:02.256056+00:00
+        m = re.search(r'Circuit\s+"[^"]+"\s+OPEN until\s+(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2})?)', text)
+        if m:
+            try:
+                ts_str = m.group(1).replace(' ', 'T')
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                return ('circuit_open', ts)
+            except Exception:
+                pass
+        return (None, None)
+
+    def __init__(self, config, signer, compartment_id, regions=None, force=False, max_retries=3,
+                 delete_compartment=False, delete_subcompartments=False, subcompartment_ids=None):
         self.config = config
         self.signer = signer
         self.compartment_id = compartment_id
         self.force = force
         self.max_retries = max_retries
         self.delete_compartment = delete_compartment
+        self.delete_subcompartments = delete_subcompartments
+        # Explicit list of child compartment OCIDs to process. When non-empty, only these
+        # are touched; when empty and delete_subcompartments=True, all direct children are.
+        self.subcompartment_ids = subcompartment_ids or []
+
+        # Resources that hit a pre-requisite error (DBM enabled, feature gates, etc.) — the
+        # outer retry loop should not waste attempts on these.
+        self._non_retriable_ids = set()
+        # Latest OCI circuit-breaker cooldown seen across any worker thread. The outer loop
+        # sleeps until this timestamp before its next retry pass.
+        self._circuit_open_until = None  # datetime or None
         self.clients = {}
         self.regions = regions or self._get_subscribed_regions()
 
@@ -239,10 +296,11 @@ class OCISmartDelete:
             'retriable': 0,  # Failures that may succeed on re-run
             'current_type': '',
             'current_resource': '',
-            'status': 'idle',  # idle, discovering, deleting, cleanup, complete
+            'status': 'idle',  # idle, discovering, deleting, cleanup, complete, subcompartments
             'resources_status': {},  # {resource_id: {name, type, status, error}}
             'phase': '',
-            'processed_ids': set()  # Track which resources have been counted in 'processed'
+            'processed_ids': set(),  # Track which resources have been counted in 'processed'
+            'subcompartments': []    # [{id, name, status, deleted, failed, total, error}]
         }
 
     def _get_subscribed_regions(self):
@@ -598,6 +656,16 @@ class OCISmartDelete:
                 return True
             elif e.status == 409:  # Conflict - usually dependency issue
                 error_msg = str(e.message)
+                # Pre-requisite errors (feature not enabled, DBM still on, etc.) won't resolve by retrying
+                classification, hint = self._classify_error(error_msg)
+                if classification == 'non_retriable':
+                    logger.error(f"Pre-requisite required for {resource_name}: {e.message}")
+                    logger.error(f"  → {hint}")
+                    self.failed_count[resource.resource_type] += 1
+                    self._update_resource_status(resource_id, resource_name, resource.resource_type,
+                                                 'failed', f"{e.message} — {hint}")
+                    self._non_retriable_ids.add(resource_id)
+                    return False
                 # Check if this is a "default" resource that will be auto-deleted with VCN
                 if 'is the default for VCN' in error_msg:
                     logger.info(f"Skipping default resource (will be auto-deleted with VCN): {resource_name}")
@@ -664,6 +732,23 @@ class OCISmartDelete:
                 return False
         except Exception as e:
             error_msg = str(e)
+            classification, info = self._classify_error(error_msg)
+            if classification == 'non_retriable':
+                logger.error(f"Pre-requisite required for {resource_name}: {error_msg}")
+                logger.error(f"  → {info}")
+                self.failed_count[resource.resource_type] += 1
+                self._update_resource_status(resource_id, resource_name, resource.resource_type,
+                                             'failed', f"{error_msg} — {info}")
+                self._non_retriable_ids.add(resource_id)
+                return False
+            if classification == 'circuit_open':
+                # OCI's circuit breaker opened — record the reopen time so the outer
+                # retry loop can sleep long enough for it to clear.
+                if self._circuit_open_until is None or info > self._circuit_open_until:
+                    self._circuit_open_until = info
+                logger.warning(f"Circuit breaker open for {resource_name}; outer retry will wait")
+                # Fall through as a retriable failure (no resource status change)
+                return False
             logger.error(f"Unexpected error deleting {resource_id}: {error_msg}")
             self.failed_count[resource.resource_type] += 1
             self._update_resource_status(resource_id, resource_name, resource.resource_type, 'failed', error_msg)
@@ -775,13 +860,34 @@ class OCISmartDelete:
         # Track failed resources for retry
         failed_resources = []
 
-        # Process each region
+        # Backoff schedule between retry passes (seconds). Tuned so the final pass lands
+        # well past OCI's 30-second circuit-breaker window even if we don't parse the
+        # reopen timestamp for some reason.
+        retry_backoff_seconds = [0, 15, 45, 90]
+
         for retry in range(self.max_retries + 1):
             if retry > 0:
+                # Drop anything a worker flagged as non-retriable (pre-req errors, etc.)
+                failed_resources = [r for r in failed_resources
+                                    if r.identifier not in self._non_retriable_ids]
                 if not failed_resources:
                     break
-                logger.info(f"\nRetry attempt {retry}/{self.max_retries} for {len(failed_resources)} failed resources")
-                time.sleep(5 * retry)  # Exponential backoff
+
+                # Compute how long to sleep: the longer of the scheduled backoff or the
+                # remaining circuit-breaker cooldown plus a small buffer.
+                base_sleep = retry_backoff_seconds[min(retry, len(retry_backoff_seconds) - 1)]
+                sleep_s = base_sleep
+                if self._circuit_open_until is not None:
+                    remaining = (self._circuit_open_until - datetime.now(timezone.utc)).total_seconds()
+                    if remaining > 0:
+                        sleep_s = max(sleep_s, remaining + 2)
+                        logger.info(f"OCI circuit breaker open — waiting {sleep_s:.0f}s for it to clear")
+                    else:
+                        # Window elapsed; forget it so we don't keep waiting on stale state
+                        self._circuit_open_until = None
+
+                logger.info(f"\nRetry attempt {retry}/{self.max_retries} for {len(failed_resources)} failed resources (sleeping {sleep_s:.0f}s)")
+                time.sleep(sleep_s)
 
             resources_to_try = failed_resources if retry > 0 else resources
             failed_resources = []
@@ -915,13 +1021,14 @@ class OCISmartDelete:
             return
 
         try:
-            # Get VirtualNetworkClient for the compartment's region
-            network_client = self._get_client('core.VirtualNetworkClient', self.config['region'])
-
             for route_table in resources_by_type['RouteTable']:
                 try:
                     rt_id = route_table.identifier
                     rt_name = getattr(route_table, 'display_name', rt_id)
+
+                    # Route tables are regional — use the client for the route table's own region
+                    rt_region = getattr(route_table, 'region', None) or self.config['region']
+                    network_client = self._get_client('core.VirtualNetworkClient', rt_region)
 
                     # Get current route table
                     rt = network_client.get_route_table(rt_id).data
@@ -954,8 +1061,98 @@ class OCISmartDelete:
             logger.warning(f"Error during VCN cleanup: {e}")
             # Continue anyway - regular deletion may still work
 
+    def _process_subcompartments(self):
+        """
+        Process direct (1-level-deep) subcompartments before handling the parent.
+        Each child is cleaned and its compartment is deleted. If a child has its
+        own subcompartments, OCI will block the compartment delete — we log and
+        continue so the parent can still make progress on its own resources.
+        """
+        identity = oci.identity.IdentityClient(self.config, signer=self.signer)
+
+        children = []
+        if self.subcompartment_ids:
+            # Caller gave us an explicit selection — fetch each one
+            for cid in self.subcompartment_ids:
+                try:
+                    comp = identity.get_compartment(cid).data
+                    if comp.lifecycle_state == 'ACTIVE':
+                        children.append(comp)
+                    else:
+                        logger.info(f"Skipping subcompartment {comp.name} (state: {comp.lifecycle_state})")
+                except Exception as e:
+                    logger.warning(f"Could not fetch subcompartment {cid}: {e}")
+        else:
+            # Legacy path: all direct active children
+            try:
+                response = oci.pagination.list_call_get_all_results(
+                    identity.list_compartments,
+                    self.compartment_id,
+                    compartment_id_in_subtree=False
+                )
+                children = [c for c in response.data if c.lifecycle_state == 'ACTIVE']
+            except Exception as e:
+                logger.error(f"Could not list subcompartments: {e}")
+                return
+        if not children:
+            logger.info("No active subcompartments to process")
+            return
+
+        logger.info("\n" + "="*80)
+        logger.info(f"Subcompartment phase: processing {len(children)} direct subcompartment(s)")
+        logger.info("="*80)
+
+        self.progress['status'] = 'subcompartments'
+        self.progress['phase'] = f'Processing {len(children)} subcompartment(s)'
+        self.progress['subcompartments'] = [
+            {'id': c.id, 'name': c.name, 'status': 'pending',
+             'deleted': 0, 'failed': 0, 'total': 0, 'error': None}
+            for c in children
+        ]
+
+        for idx, child in enumerate(children):
+            entry = self.progress['subcompartments'][idx]
+            entry['status'] = 'processing'
+            self.progress['phase'] = f"Subcompartment {idx + 1}/{len(children)}: {child.name}"
+            logger.info(f"\n--- Subcompartment {idx + 1}/{len(children)}: {child.name} ---")
+
+            try:
+                child_deleter = OCISmartDelete(
+                    config=self.config,
+                    signer=self.signer,
+                    compartment_id=child.id,
+                    regions=self.regions,
+                    force=True,
+                    max_retries=self.max_retries,
+                    delete_compartment=True,
+                    delete_subcompartments=False  # only one level per run
+                )
+                child_deleter.delete_all()
+
+                entry['total'] = child_deleter.progress.get('total_resources', 0)
+                entry['deleted'] = child_deleter.progress.get('deleted', 0)
+                entry['failed'] = child_deleter.progress.get('failed', 0)
+
+                # Roll up counters so the parent progress reflects the whole job
+                for k, v in child_deleter.deleted_count.items():
+                    self.deleted_count[f"[{child.name}] {k}"] += v
+                for k, v in child_deleter.failed_count.items():
+                    self.failed_count[f"[{child.name}] {k}"] += v
+
+                entry['status'] = 'failed' if entry['failed'] > 0 else 'complete'
+            except Exception as e:
+                logger.error(f"Error processing subcompartment {child.name}: {e}")
+                entry['status'] = 'failed'
+                entry['error'] = str(e)
+
+        logger.info("\n✓ Subcompartment phase complete")
+
     def delete_all(self):
         """Main deletion workflow"""
+        # Phase 0 (optional): clean & delete specific or all direct subcompartments first
+        if self.subcompartment_ids or self.delete_subcompartments:
+            self._process_subcompartments()
+
         # Initialize progress
         self.progress['status'] = 'discovering'
         self.progress['phase'] = 'Discovering resources'
@@ -1081,6 +1278,8 @@ def main():
                        help='Enable debug logging')
     parser.add_argument('--delete-compartment', action='store_true',
                        help='Delete the compartment itself after cleaning up resources')
+    parser.add_argument('--delete-subcompartments', action='store_true',
+                       help='Also clean up and delete direct (1-level-deep) subcompartments first')
 
     args = parser.parse_args()
 
@@ -1106,7 +1305,8 @@ def main():
         compartment_id=args.compartment,
         regions=regions,
         force=args.force,
-        delete_compartment=args.delete_compartment
+        delete_compartment=args.delete_compartment,
+        delete_subcompartments=args.delete_subcompartments
     )
 
     deleter.delete_all()

@@ -186,47 +186,61 @@ def list_compartments():
 
         # Get tenancy info
         tenancy = identity.get_tenancy(config['tenancy']).data
+        tenancy_id = config['tenancy']
 
-        # List all compartments (including sub-compartments)
-        compartments = []
+        # Fetch the entire subtree in one paginated call, then build the hierarchy
+        response = oci.pagination.list_call_get_all_results(
+            identity.list_compartments,
+            tenancy_id,
+            compartment_id_in_subtree=True
+        )
 
-        # Add root compartment
-        compartments.append({
-            'id': config['tenancy'],
-            'name': tenancy.name + ' (root)',
+        # Index children by parent OCID so we can DFS the tree
+        children_by_parent = {}
+        for comp in response.data:
+            if comp.lifecycle_state not in ('ACTIVE', 'DELETING'):
+                continue
+            children_by_parent.setdefault(comp.compartment_id, []).append(comp)
+
+        # Sort each sibling group alphabetically (case-insensitive) for stable display
+        for siblings in children_by_parent.values():
+            siblings.sort(key=lambda c: (c.name or '').lower())
+
+        compartments = [{
+            'id': tenancy_id,
+            'name': tenancy.name,
             'description': tenancy.description or '',
             'state': 'ACTIVE',
-            'is_root': True
-        })
+            'is_root': True,
+            'level': 0,
+            'parent_id': None,
+            'path': [tenancy.name],
+            'has_children': bool(children_by_parent.get(tenancy_id))
+        }]
 
-        # Get all compartments
-        def get_compartments_recursive(parent_id, level=0):
-            try:
-                response = oci.pagination.list_call_get_all_results(
-                    identity.list_compartments,
-                    parent_id,
-                    compartment_id_in_subtree=True
-                )
-
-                for comp in response.data:
-                    if comp.lifecycle_state in ['ACTIVE', 'DELETING']:
-                        indent = '  ' * level
-                        compartments.append({
-                            'id': comp.id,
-                            'name': f"{indent}{comp.name}",
-                            'description': comp.description or '',
-                            'state': comp.lifecycle_state,
-                            'is_root': False,
-                            'level': level
-                        })
-            except Exception as e:
-                logger.error(f"Error listing compartments for {parent_id}: {e}")
-
-        get_compartments_recursive(config['tenancy'])
+        # Iterative DFS so deep trees (OCI allows 6 levels under root) won't blow the stack
+        stack = [(c, 1, [tenancy.name]) for c in reversed(children_by_parent.get(tenancy_id, []))]
+        while stack:
+            comp, level, ancestor_path = stack.pop()
+            my_path = ancestor_path + [comp.name]
+            compartments.append({
+                'id': comp.id,
+                'name': comp.name,
+                'description': comp.description or '',
+                'state': comp.lifecycle_state,
+                'is_root': False,
+                'level': level,
+                'parent_id': comp.compartment_id,
+                'path': my_path,
+                'has_children': bool(children_by_parent.get(comp.id))
+            })
+            for child in reversed(children_by_parent.get(comp.id, [])):
+                stack.append((child, level + 1, my_path))
 
         return jsonify({
             'compartments': compartments,
-            'tenancy_name': tenancy.name
+            'tenancy_name': tenancy.name,
+            'total_count': len(compartments)
         })
 
     except Exception as e:
@@ -240,6 +254,7 @@ def discover_resources():
     try:
         data = request.json
         compartment_id = data.get('compartment_id')
+        include_subcompartments = data.get('include_subcompartments', False)
 
         if not compartment_id:
             return jsonify({'error': 'compartment_id is required'}), 400
@@ -248,42 +263,69 @@ def discover_resources():
         if not config:
             return jsonify({'error': 'OCI configuration not found'}), 500
 
-        # Create deleter instance
+        def format_discovery(resources_by_type):
+            resources = []
+            total = 0
+            for resource_type, items in resources_by_type.items():
+                total += len(items)
+                resources.append({
+                    'type': resource_type,
+                    'count': len(items),
+                    'items': [
+                        {
+                            'id': item.identifier,
+                            'name': getattr(item, 'display_name', item.identifier),
+                            'state': getattr(item, 'lifecycle_state', 'UNKNOWN'),
+                            'region': getattr(item, 'region', 'unknown')
+                        }
+                        for item in items[:10]
+                    ]
+                })
+            return resources, total
+
+        # Parent compartment
         deleter = OCISmartDelete(
             config=config,
             signer=signer,
             compartment_id=compartment_id,
             force=True
         )
-
-        # Discover resources
         resources_by_type = deleter.discover_resources()
+        resources, total_count = format_discovery(resources_by_type)
 
-        # Format for frontend
-        resources = []
-        total_count = 0
-
-        for resource_type, items in resources_by_type.items():
-            total_count += len(items)
-            resources.append({
-                'type': resource_type,
-                'count': len(items),
-                'items': [
-                    {
-                        'id': item.identifier,
-                        'name': getattr(item, 'display_name', item.identifier),
-                        'state': getattr(item, 'lifecycle_state', 'UNKNOWN'),
-                        'region': getattr(item, 'region', 'unknown')
-                    }
-                    for item in items[:10]  # Limit to first 10 for display
-                ]
-            })
-
-        return jsonify({
+        response = {
             'resources': resources,
             'total_count': total_count,
-            'type_count': len(resources_by_type)
-        })
+            'type_count': len(resources_by_type),
+            'subcompartments': []
+        }
+
+        # Always include a lightweight list of direct subcompartments so the UI can
+        # offer per-child selection. Resource discovery per child is done lazily by
+        # the frontend making additional /api/discover calls.
+        identity = oci.identity.IdentityClient(config, signer=signer)
+        try:
+            children_resp = oci.pagination.list_call_get_all_results(
+                identity.list_compartments,
+                compartment_id,
+                compartment_id_in_subtree=False
+            )
+            children = sorted(
+                [c for c in children_resp.data if c.lifecycle_state in ('ACTIVE', 'DELETING')],
+                key=lambda c: (c.name or '').lower()
+            )
+            for child in children:
+                response['subcompartments'].append({
+                    'id': child.id,
+                    'name': child.name,
+                    'state': child.lifecycle_state,
+                    'description': child.description or ''
+                })
+        except Exception as e:
+            logger.error(f"Error listing subcompartments: {e}")
+            response['subcompartments_error'] = str(e)
+
+        return jsonify(response)
 
     except Exception as e:
         logger.error(f"Error discovering resources: {e}")
@@ -307,6 +349,9 @@ def delete_resources():
         data = request.json
         compartment_id = data.get('compartment_id')
         delete_compartment = data.get('delete_compartment', False)
+        # Accept either a boolean (legacy: all direct children) or an explicit id list
+        delete_subcompartments = data.get('delete_subcompartments', False)
+        subcompartment_ids = data.get('subcompartment_ids') or []
 
         if not compartment_id:
             return jsonify({'error': 'compartment_id is required'}), 400
@@ -321,7 +366,9 @@ def delete_resources():
             signer=signer,
             compartment_id=compartment_id,
             force=True,
-            delete_compartment=delete_compartment
+            delete_compartment=delete_compartment,
+            delete_subcompartments=delete_subcompartments,
+            subcompartment_ids=subcompartment_ids
         )
 
         # Store deleter instance for progress tracking
